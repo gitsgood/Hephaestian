@@ -18,6 +18,7 @@ CMakeUserPresets.json
 # Asset trash
 /Assets
 /Textures
+/src/shaders/
 
 # OS junk
 Thumbs.db
