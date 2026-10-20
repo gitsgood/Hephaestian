@@ -15,6 +15,7 @@ struct Vertex
 	glm::vec3 pos;		// Vertex position (x, y, z)
 	glm::vec3 col;		// Vertex colour (r, g, b)
 	glm::vec2 tex;		// Texture Coords (u, v)
+	glm::vec3 normal;   // Vertex Normal (x, y, z)
 
 	// How the data for a single vertex (including info such as position, colour, texture coordinates, normals, etc...) is as a whole
 	[[nodiscard]] static inline VkVertexInputBindingDescription getBindingDescription() noexcept
@@ -30,9 +31,9 @@ struct Vertex
 	}
 
 	// How the data for an attribute is defined within a vertex
-	[[nodiscard]] static inline std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions() noexcept
+	[[nodiscard]] static inline std::array<VkVertexInputAttributeDescription, 4> getAttributeDescriptions() noexcept
 	{
-		std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
+		std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions{};
 
 		// Position attribute
 		attributeDescriptions[0].binding = 0;							// Which binding the data is at (should be same as above)
@@ -51,6 +52,12 @@ struct Vertex
 		attributeDescriptions[2].location = 2;
 		attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
 		attributeDescriptions[2].offset = offsetof(Vertex, tex);
+
+		// Normal
+		attributeDescriptions[3].binding = 0;
+		attributeDescriptions[3].location = 3;
+		attributeDescriptions[3].format = VK_FORMAT_R32G32B32_SFLOAT;
+		attributeDescriptions[3].offset = offsetof(Vertex, normal);
 
 		return attributeDescriptions;
 	}

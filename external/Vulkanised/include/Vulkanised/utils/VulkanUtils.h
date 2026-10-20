@@ -109,9 +109,7 @@ namespace Vulkanised::Utilities::Vulkan
 
         if (vkCreateBuffer(logicalDevice, &bufferInfo, nullptr, buffer) != VK_SUCCESS)
         {
-            constexpr const char* message{ "failed to create a buffer" };
-            LOGE(message);
-            throw std::runtime_error(message);
+            LOGNTHROW("failed to create a buffer");
         }
 
         // GET BUFFER MEMORY REQUIREMENTS
@@ -129,17 +127,13 @@ namespace Vulkanised::Utilities::Vulkan
         // Allocate memory to VkDeviceMemory
         if (vkAllocateMemory(logicalDevice, &memoryAllocInfo, nullptr, bufferMemory) != VK_SUCCESS)
         {
-            constexpr const char* message{ "failed to allocate buffer memory" };
-            LOGE(message);
-            throw std::runtime_error(message);
+            LOGNTHROW("failed to allocate buffer memory");
         }
 
         // Allocate memory to given vertex buffer
         if (vkBindBufferMemory(logicalDevice, *buffer, *bufferMemory, 0) != VK_SUCCESS)
         {
-            constexpr const char* message{ "failed to bind buffer memory!" };
-            LOGE(message);
-            throw std::runtime_error(message);
+            LOGNTHROW("failed to bind buffer memory!");
         }
     }
 
@@ -158,9 +152,7 @@ namespace Vulkanised::Utilities::Vulkan
         // Allocate command buffer from pool
         if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS)
         {
-            constexpr const char* message{ "failed to allocate command buffer" };
-            LOGE(message);
-            throw std::runtime_error(message);
+            LOGNTHROW("failed to allocate command buffer");
         }
 
         // Information to begin the command buffer record
@@ -171,9 +163,7 @@ namespace Vulkanised::Utilities::Vulkan
         // Begin recording transfer commands
         if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
         {
-            constexpr const char* message{ "failed to begin recording transfer commands" };
-            LOGE(message);
-            throw std::runtime_error(message);
+            LOGNTHROW("failed to begin recording transfer commands");
         }
 
         return commandBuffer;
@@ -184,9 +174,7 @@ namespace Vulkanised::Utilities::Vulkan
         // End commands
         if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
         {
-            constexpr const char* message{ "failed to end the transfer command buffer" };
-            LOGE(message);
-            throw std::runtime_error(message);
+            LOGNTHROW("failed to end the transfer command buffer");
         }
 
         // Queue submission information
@@ -198,15 +186,11 @@ namespace Vulkanised::Utilities::Vulkan
         // Submit transfer command to transfer queue and wait until it finishes
         if (vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
         {
-            constexpr const char* message{ "failed to submit command to transfer queue" };
-            LOGE(message);
-            throw std::runtime_error(message);
+            LOGNTHROW("failed to submit command to transfer queue");
         }
         if (vkQueueWaitIdle(queue) != VK_SUCCESS)
         {
-            constexpr const char* message{ "somehow failed to wait until transfer queue finishes whatever its doing" };
-            LOGE(message);
-            throw std::runtime_error(message);
+            LOGNTHROW("somehow failed to wait until transfer queue finishes whatever its doing");
         }
         
         // Free temporary command buffer back to pool
@@ -219,7 +203,8 @@ namespace Vulkanised::Utilities::Vulkan
         VkCommandPool transferCommandPool, 
         VkBuffer srcBuffer,
         VkBuffer dstBuffer,
-        VkDeviceSize bufferSize)
+        VkDeviceSize bufferSize,
+        VkDeviceSize dstOffset = 0)
     {
         // Create buffer
         VkCommandBuffer transferCommandBuffer = beginCommandBuffer(logicalDevice, transferCommandPool);
@@ -227,7 +212,7 @@ namespace Vulkanised::Utilities::Vulkan
         // Region of data to copy from and to
         VkBufferCopy bufferCopyRegion{};
         bufferCopyRegion.srcOffset = 0;
-        bufferCopyRegion.dstOffset = 0;
+        bufferCopyRegion.dstOffset = dstOffset;
         bufferCopyRegion.size = bufferSize;
 
         // Command to copy src buffer to dst buffer

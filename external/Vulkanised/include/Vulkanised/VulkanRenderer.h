@@ -28,28 +28,58 @@ public:
 
 	int init(GLFWwindow* newWindow);
 
-	inline void updateModel(int modelId, glm::mat4 newModel) noexcept { if (static_cast<size_t>(modelId) >= m_MeshList.size()) return; m_MeshList[modelId]->setModel(newModel); }
+	// The new ECS-friendly rendering API
+	uint32_t loadMesh(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices, int texId);
+	void SubmitFrame(const std::vector<RenderInstance>& instances);
 
-	void draw();
 	void cleanup() noexcept;
 
 	~VulkanRenderer();
 
 private:
+	// ECS OVERHAUL
+	// Limits
+	static constexpr uint32_t MAX_INSTANCES = 100000;
+	static constexpr VkDeviceSize UNIFIED_BUFFER_SIZE = 64 * 1024 * 1024; // 64 MB for geometry
+
+	// Asset Storage
+	std::vector<MeshAsset> m_Meshes;
+
+	// Unified Geometry Buffers (Replaces individual Mesh buffers)
+	VkBuffer m_GlobalVertexBuffer;
+	VkDeviceMemory m_GlobalVertexBufferMemory;
+	uint32_t m_CurrentVertexOffset{ 0 };
+
+	VkBuffer m_GlobalIndexBuffer;
+	VkDeviceMemory m_GlobalIndexBufferMemory;
+	uint32_t m_CurrentIndexOffset{ 0 };
+
+	// SSBO for Instance Transforms (Replaces Push Constants)
+	std::vector<VkBuffer> m_SSBO;
+	std::vector<VkDeviceMemory> m_SSBOMemory;
+	std::vector<void*> m_SSBOMapped;
+
+	// New internal setup functions
+	void createUnifiedBuffers();
+	void createSSBOs();
+
+
 	// GLFW Window
 	VAtomic<GLFWwindow> m_Window;
 
 	int m_CurrentFrame{ 0 };
 
 	// Scene objects
-	std::vector<std::unique_ptr<Mesh>> m_MeshList;
+
 
 	// Scene settings
 	struct UboViewProjection {
 		glm::mat4 projection;
 		glm::mat4 view;
-		glm::mat4 model;
-	} m_UboViewProjection;
+		glm::vec4 lightPos;
+		glm::vec4 viewPos;
+		glm::vec4 lightColor;
+	} m_UboViewProjection;	// Everything is either a mat4 or vec4, for alignment purposes with the standard
 
 	// Vulkan Components
 	// - Main
@@ -76,7 +106,7 @@ private:
 	// - Descriptors
 	VkDescriptorSetLayout m_DescriptorSetLayout;
 	VkDescriptorSetLayout m_SamplerSetLayout;
-	VkPushConstantRange m_PushConstantRange;
+	//VkPushConstantRange m_PushConstantRange;
 
 	VkDescriptorPool m_DescriptorPool;
 	VkDescriptorPool m_SamplerDescriptorPool;
@@ -136,7 +166,6 @@ private:
 	void createSwapchain();
 	void createRenderPass();
 	void createDescriptorSetLayout();
-	void createPushConstantRange();
 	void createGraphicsPipeline();
 	void createDepthBufferImage();
 	void createFramebuffers();
@@ -157,7 +186,7 @@ private:
 	void recreateSwapchain();	// Called in draw, if window size changed
 
 	// - Record functions
-	void recordCommands(uint32_t currentImage);				// Now also called in draw()
+	void recordCommands(uint32_t currentImage, const std::vector<RenderInstance>& instances);				// Now also called in draw()
 
 	// - Get functions
 	void getPhysicalDevice();
@@ -192,12 +221,13 @@ private:
 	// -- Create functions
 	VkImage createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags useFlags, VkMemoryPropertyFlags propFlags, VkDeviceMemory* imageMemory) const;
 	VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags) const;
-	VkShaderModule createShaderModule(const std::vector<char>& code) const;
+	VkShaderModule createShaderModule(const std::vector<uint32_t>& code) const;
 
+	public:
 	int createTextureImage(std::string_view fileName);
 	int createTexture(std::string_view fileName);
 	int createTextureDescriptor(VkImageView textureImage);
-
+	private:
 	// -- Loader Functions
 	stbi_uc* loadTextureFile(std::string_view fileName, int* width, int* height, VkDeviceSize* imageSize);
 };

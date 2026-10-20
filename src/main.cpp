@@ -1,6 +1,5 @@
 #include <Vulkanised/Logger.h>
 #include <Vulkanised/VulkanRenderer.h>
-#include <GLFW/glfw3.h>
 
 // Little trick I stole from Rust. Ideally this should be immutable and thread-safe, but at least it is supposed to be somehow thread-safe now. This might come in handy down the line.
 Vulkanised::VAtomic<GLFWwindow> window;
@@ -48,36 +47,59 @@ auto main() -> int
 		return EXIT_FAILURE;
 	}
 
-	float angle{ 0.0f };
-	float deltaTime{ 0.0f };
-	float lastTime{ 0.0f };
+	// --- ASSET LOADING PHASE ---
+	std::vector<Vulkanised::Vertex> meshVertices1 = {
+		{ { -0.4, 0.4, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 1.0f, 1.0f }, { 0.0f, 0.0f, 1.0f } },		// 0
+		{ { -0.4, -0.4, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } },		// 1
+		{ { 0.4, -0.4, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } },		// 2
+		{ { 0.4, 0.4, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 0.0f, 1.0f }, { 0.0f, 0.0f, 1.0f } },		// 3
+	};
+	std::vector<uint32_t> meshIndices1 = { 0, 1, 2, 2, 3, 0 };
+	uint32_t tex1 = renderer.createTexture("bibi.jpg");
+	uint32_t mesh1 = renderer.loadMesh(meshVertices1, meshIndices1, tex1);
 
-	// Loop until closed
+	std::vector<Vulkanised::Vertex> meshVertices2 = {
+		{ { -0.25, 0.6, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 1.0f, 1.0f }, { 0.0f, 0.0f, 1.0f } },		// 0
+		{ { -0.25, -0.6, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } },		// 1
+		{ { 0.25, -0.6, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } },		// 2
+		{ { 0.25, 0.6, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 0.0f, 1.0f} , { 0.0f, 0.0f, 1.0f } },		// 3
+	};
+	uint32_t tex2 = renderer.createTexture("trump.jpg");
+	uint32_t mesh2 = renderer.loadMesh(meshVertices2, meshIndices1, tex2);
+
+	float angle = 0.0f;
+	float lastTime = 0.0f;
+
+	// --- GAME LOOP ---
 	while (!glfwWindowShouldClose(window.load().get()))
 	{
 		glfwPollEvents();
 
-		float now{ static_cast<float>(glfwGetTime()) };
-		deltaTime = now - lastTime;
+		float now = static_cast<float>(glfwGetTime());
+		float deltaTime = now - lastTime;
 		lastTime = now;
 
+		// 1. ECS LOGIC / SYSTEMS MATH
 		angle += 10.0f * deltaTime;
 		if (angle > 360.0f) { angle -= 360.0f; }
 
-		glm::mat4 firstModel(1.0f);
-		glm::mat4 secondModel(1.0f);
-
-		firstModel = glm::translate(firstModel, glm::vec3(-1.0f, 0.0f, -1.0f));
+		glm::mat4 firstModel = glm::translate(glm::mat4(1.0f), glm::vec3(-1.0f, 0.0f, -1.0f));
 		firstModel = glm::rotate(firstModel, glm::radians(angle), glm::vec3(0.0f, 0.0f, 1.0f));
 
-		secondModel = glm::translate(secondModel, glm::vec3(1.0f, 0.0f, -3.0f));
+		glm::mat4 secondModel = glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, -3.0f));
 		secondModel = glm::rotate(secondModel, glm::radians(-angle * 10), glm::vec3(0.0f, 0.0f, 1.0f));
 
-		renderer.updateModel(0, firstModel);
-		renderer.updateModel(1, secondModel);
+		// 2. BUILD RENDER PACKET
+		// An ECS render system would loop over entities with (Mesh, Transform) components and build this list.
+		std::vector<Vulkanised::RenderInstance> packet;
+		packet.push_back({ mesh1, tex1, firstModel });
+		packet.push_back({ mesh2, tex2, secondModel });
 
-		//Utilities::Time::timeIt("Drawing", [&](){renderer.draw();});
-		renderer.draw();
+		// Push 10,000 more instances here with zero Vulkan overhead!
+		// for(int i=0; i<10000; i++) { packet.push_back({ mesh1, tex1, RandomTransform() }); }
+
+		// 3. SUBMIT TO RENDERER
+		renderer.SubmitFrame(packet);
 	}
 
 	renderer.cleanup();

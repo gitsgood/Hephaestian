@@ -10,9 +10,7 @@ namespace Vulkanised
 	{
 		if (glfwInit() == GLFW_FALSE)
 		{
-			constexpr const char* message { "Failed to initialize GLFW" };
-			LOGE(message);
-			throw std::runtime_error(message);
+			LOGNTHROW("Failed to initialize GLFW");
 		}
 
 		// Set GLFW to not create an OpenGL context
@@ -24,9 +22,7 @@ namespace Vulkanised
 
 		if (!rawWindow) 
 		{
-			constexpr const char* message { "Failed to create GLFW window" };
-			LOGE(message);
-			throw std::runtime_error(message);
+			LOGNTHROW("Failed to create GLFW window");
 		}
 
 		// Wrap it in a shared_ptr with a custom deleter
@@ -51,43 +47,63 @@ int main()
 	initWindow("Test Window", 1366, 768);
 
 	// Create Vulkan renderer instance and initialize it with the window
-	if (renderer.init(window.load().get()) == EXIT_FAILURE)
-	{
-		printf("Failed to initialize Vulkan renderer\n");
-		return EXIT_FAILURE;
-	}
 
-	float angle{ 0.0f };
-	float deltaTime{ 0.0f };
-	float lastTime{ 0.0f };
+    if (renderer.init(window.load().get()) == EXIT_FAILURE) return EXIT_FAILURE;
 
-	// Loop until closed
-	while (!glfwWindowShouldClose(window.load().get()))
-	{
-		glfwPollEvents();
+    // --- ASSET LOADING PHASE ---
+    std::vector<Vertex> meshVertices1 = { 
+		{ { -0.4, 0.4, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 1.0f, 1.0f }, { 0.0f, 0.0f, 1.0f } },		// 0
+		{ { -0.4, -0.4, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } },		// 1
+		{ { 0.4, -0.4, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } },		// 2
+		{ { 0.4, 0.4, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 0.0f, 1.0f }, { 0.0f, 0.0f, 1.0f } },		// 3
+    };
+    std::vector<uint32_t> meshIndices1 = { 0, 1, 2, 2, 3, 0 };
+    uint32_t tex1 = renderer.createTexture("bibi.jpg");
+    uint32_t mesh1 = renderer.loadMesh(meshVertices1, meshIndices1, tex1);
 
-		float now{ static_cast<float>(glfwGetTime()) };
-		deltaTime = now - lastTime;
-		lastTime = now;
+    std::vector<Vertex> meshVertices2 = {
+		{ { -0.25, 0.6, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 1.0f, 1.0f }, { 0.0f, 0.0f, 1.0f } },		// 0
+		{ { -0.25, -0.6, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } },		// 1
+		{ { 0.25, -0.6, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } },		// 2
+		{ { 0.25, 0.6, 0.0 },{ 1.0f, 1.0f, 1.0f },{ 0.0f, 1.0f} , { 0.0f, 0.0f, 1.0f } },		// 3
+	};
+    uint32_t tex2 = renderer.createTexture("trump.jpg");
+    uint32_t mesh2 = renderer.loadMesh(meshVertices2, meshIndices1, tex2);
 
-		angle += 10.0f * deltaTime;
-		if (angle > 360.0f) { angle -= 360.0f; }
-		
-		glm::mat4 firstModel(1.0f);
-		glm::mat4 secondModel(1.0f);
+    float angle = 0.0f;
+    float lastTime = 0.0f;
 
-		firstModel = glm::translate(firstModel, glm::vec3(-1.0f, 0.0f, -1.0f));
-		firstModel = glm::rotate(firstModel, glm::radians(angle), glm::vec3(0.0f, 0.0f, 1.0f));
+    // --- GAME LOOP ---
+    while (!glfwWindowShouldClose(window.load().get()))
+    {
+        glfwPollEvents();
 
-		secondModel = glm::translate(secondModel, glm::vec3(1.0f, 0.0f, -3.0f));
-		secondModel = glm::rotate(secondModel, glm::radians(-angle * 10), glm::vec3(0.0f, 0.0f, 1.0f));
+        float now = static_cast<float>(glfwGetTime());
+        float deltaTime = now - lastTime;
+        lastTime = now;
 
-		renderer.updateModel(0, firstModel);
-		renderer.updateModel(1, secondModel);
+        // 1. ECS LOGIC / SYSTEMS MATH
+        angle += 10.0f * deltaTime;
+        if (angle > 360.0f) { angle -= 360.0f; }
 
-		//Utilities::Time::timeIt("Drawing", [&](){renderer.draw();});
-		renderer.draw();
-	}
+        glm::mat4 firstModel = glm::translate(glm::mat4(1.0f), glm::vec3(-1.0f, 0.0f, -1.0f));
+        firstModel = glm::rotate(firstModel, glm::radians(angle), glm::vec3(0.0f, 0.0f, 1.0f));
+
+        glm::mat4 secondModel = glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, -3.0f));
+        secondModel = glm::rotate(secondModel, glm::radians(-angle * 10), glm::vec3(0.0f, 0.0f, 1.0f));
+
+        // 2. BUILD RENDER PACKET
+        // An ECS render system would loop over entities with (Mesh, Transform) components and build this list.
+        std::vector<RenderInstance> packet;
+        packet.push_back({ mesh1, tex1, firstModel });
+        packet.push_back({ mesh2, tex2, secondModel });
+
+        // Push 10,000 more instances here with zero Vulkan overhead!
+        // for(int i=0; i<10000; i++) { packet.push_back({ mesh1, tex1, RandomTransform() }); }
+
+        // 3. SUBMIT TO RENDERER
+        renderer.SubmitFrame(packet);
+    }
 
 	renderer.cleanup();
 

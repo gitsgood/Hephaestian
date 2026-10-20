@@ -25,6 +25,7 @@
 #define LOGW(fmt, ...)          Vulkanised::Logger::getLoggerInstance()->logText(Vulkanised::Logger::LogType::WARNING, std::source_location::current(), fmt __VA_OPT__(,) __VA_ARGS__)
 #define LOGE(fmt, ...)          Vulkanised::Logger::getLoggerInstance()->logText(Vulkanised::Logger::LogType::ERR, std::source_location::current(), fmt __VA_OPT__(,) __VA_ARGS__)
 #define LOGT(fmt, ...)          Vulkanised::Logger::getLoggerInstance()->logText(Vulkanised::Logger::LogType::TIMING, std::source_location::current(), fmt __VA_OPT__(,) __VA_ARGS__)
+#define LOGNTHROW(fmt, ...)     Vulkanised::Logger::getLoggerInstance()->logAndThrow(Vulkanised::Logger::LogType::ERR, std::source_location::current(), fmt __VA_OPT__(,) __VA_ARGS__)
 
 namespace Vulkanised
 {
@@ -78,6 +79,15 @@ public:
     };
 
     [[nodiscard]] std::string getTimestamp() noexcept;
+
+    // Function that does what I did a THOUSAND times, for throwing shit but also logging, ffs
+    template <typename... Args>
+    void logAndThrow(LogType type, std::source_location loc, std::string_view fmt, Args&&... args)
+    {
+        std::string formattedMessage = std::vformat(fmt, std::make_format_args(args...));
+        pushToQueue(type, loc, std::move(formattedMessage));
+        throw std::runtime_error(formattedMessage);
+    }
 
     // I want to be able to log things with modern formatting abilities. This here function takes care of it.
     template <typename... Args>

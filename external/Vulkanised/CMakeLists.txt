@@ -30,28 +30,12 @@ endif()
 if(${CMAKE_BINARY_DIR} MATCHES ".*out/.*")
     add_compile_definitions(BUILD_ENV_VISUAL_STUDIO)
     message(STATUS "=== Visual Studio detected ===")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build")
-        file(REMOVE_RECURSE "${CMAKE_CURRENT_SOURCE_DIR}/build")
-    endif()
 elseif($ENV{VSCODE_CMAKE_TOOLS}) # Extension should be detectable like that
     add_compile_definitions(BUILD_ENV_VSCODE)
     message(STATUS "=== VS Code detected ===")
-    # I added these folders in the gitignore, so this shouldn't even be necessary, but might as well...
-    file(REMOVE "${CMAKE_CURRENT_SOURCE_DIR}/CMakePresets.json")
-    file(REMOVE "${CMAKE_CURRENT_SOURCE_DIR}/CMakeUserPresets.json")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/out")
-        file(REMOVE_RECURSE "${CMAKE_CURRENT_SOURCE_DIR}/out")
-    endif()
 elseif(${CMAKE_BINARY_DIR} MATCHES ".*build/.*")
     add_compile_definitions(BUILD_ENV_QTCREATOR)
     message(STATUS "=== Qt Creator detected ===")
-    #Deleting preset files not used in Qt - generated in VS 2022
-    #This should not fail even if the files are not present
-    file(REMOVE "${CMAKE_CURRENT_SOURCE_DIR}/CMakePresets.json")
-    file(REMOVE "${CMAKE_CURRENT_SOURCE_DIR}/CMakeUserPresets.json")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/out")
-        file(REMOVE_RECURSE "${CMAKE_CURRENT_SOURCE_DIR}/out")
-    endif()
 endif()
 
 # Set source files...
@@ -62,11 +46,11 @@ set(SOURCES
     include/Vulkanised/Logger.h            src/Logger.cpp
     include/Vulkanised/VulkanRenderer.h    src/VulkanRenderer.cpp
     include/Vulkanised/Vertex.h
-    include/Vulkanised/Mesh.h              src/Mesh.cpp
+    include/Vulkanised/Mesh.h
 )
 
 # all shader and script files shown in IDE
-file(GLOB SHADER_FILES
+file(GLOB SHADER_FILES CONFIGURE_DEPENDS
     "src/shaders/*.frag"
     "src/shaders/*.vert"
 )
@@ -100,6 +84,13 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 # Absolutely force compiler verbosity, set warning level to 4 (maximum).
 if (MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W4)
+    # Subsystem logic
+    # Explicitly set the subsystem to CONSOLE for Windows, if it's on DEBUG config.
+    target_link_options(${PROJECT_NAME} PRIVATE
+    $<$<CONFIG:Debug>:/SUBSYSTEM:CONSOLE>
+    $<$<CONFIG:Release>:/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup>
+    #$<$<CONFIG:Release>:/SUBSYSTEM:CONSOLE>    # For comparing debug and release speed with console output...
+    )
 else()
     target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -pedantic)
 endif()
@@ -107,52 +98,69 @@ endif()
 # Tell CMake this specific target requires C++23
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_23)
 
-# Explicitly set the subsystem to CONSOLE for Windows, if it's on DEBUG config.
-if(MSVC)
-    target_link_options(${PROJECT_NAME} PRIVATE
-        $<$<CONFIG:Debug>:/SUBSYSTEM:CONSOLE>
-        $<$<CONFIG:Release>:/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup>
-        #$<$<CONFIG:Release>:/SUBSYSTEM:CONSOLE>    # For comparing debug and release speed with console output...
-    )
+# Link the libraries (if not on Window, we'll probably not be getting glm with vulkan)
+set(LIB_LIST
+    glfw
+    Vulkan::Vulkan
+    glaze::glaze
+    stb_image
+)
+
+if(NOT MSVC)
+    list(APPEND LIB_LIST glm::glm)
 endif()
 
-# Link the libraries (if not on Window, we'll probably not be getting glm with vulkan)
-if(NOT MSVC)
-    target_link_libraries(${PROJECT_NAME} glfw Vulkan::Vulkan glaze::glaze glm::glm stb_image)
-else()
-    target_link_libraries(${PROJECT_NAME} glfw Vulkan::Vulkan glaze::glaze stb_image)
-endif()
+target_link_libraries(${PROJECT_NAME} PUBLIC ${LIB_LIST})
 
 # Define the directories
 set(SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
-
+set(SHADER_BIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/bin")
 # Ensure the output directory exists
 file(MAKE_DIRECTORY ${SHADER_BIN_DIR})
 
-if(APPLE)
-    add_custom_target(CompileShaders
-        COMMENT "Compiling Vulkan shaders for macOS"
-        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${SHADER_SRC_DIR}/shader.vert" -o "${SHADER_SRC_DIR}/vert.spv"
-        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${SHADER_SRC_DIR}/shader.frag" -o "${SHADER_SRC_DIR}/frag.spv"
-    )
-elseif(MSVC)
-    add_custom_target(CompileShaders
-        COMMENT "Compiling Vulkan shaders for Windows"
-        COMMAND "$ENV{VULKAN_SDK}/Bin/glslangValidator.exe" -V "${SHADER_SRC_DIR}/shader.vert" -o "${SHADER_SRC_DIR}/vert.spv"
-        COMMAND "$ENV{VULKAN_SDK}/Bin/glslangValidator.exe" -V "${SHADER_SRC_DIR}/shader.frag" -o "${SHADER_SRC_DIR}/frag.spv"
-    )
-endif()
+set(SPV_OUTPUTS "")
+set(GENERATED_HEADERS "")
 
-# For the absolute off chance someone opens this project on XCode(Mac)...
-# this would be useful for an eventual wgpu addition, for now it sits...
-#if (XCODE)
-#    set_target_properties(App PROPERTIES
-#        XCODE_GENERATE_SCHEME ON
-#        XCODE_SCHEME_ENABLE_GPU_FRAME_CAPTURE_MODE "Metal"
-#    )
-#endif()
+# Loop through every discovered shader
+foreach(SHADER ${SHADER_FILES})
+    # Extract just the filename (e.g., "shader.vert")
+    get_filename_component(FILE_NAME ${SHADER} NAME)
+    
+    # --- Part A: SPIR-V Compilation (.spv) ---
+    set(OUTPUT_SPV "${SHADER_BIN_DIR}/${FILE_NAME}.spv")
+    
+    add_custom_command(
+        OUTPUT ${OUTPUT_SPV}
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${SHADER}" -o ${OUTPUT_SPV}
+        DEPENDS ${SHADER}
+        COMMENT "Compiling ${FILE_NAME} to SPIR-V"
+    )
+    list(APPEND SPV_OUTPUTS ${OUTPUT_SPV})
 
+    # --- Part B: Embedded Header Generation (.h) ---
+    # Create a safe header name: "shader.vert" -> "embedded_shader_vert.h"
+    string(REPLACE "." "_" SAFE_NAME ${FILE_NAME})
+    set(HEADER_NAME "embedded_${SAFE_NAME}.h")
+    set(HEADER_PATH "${SHADER_SRC_DIR}/${HEADER_NAME}")
+    
+    add_custom_command(
+        OUTPUT ${HEADER_PATH}
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${SHADER}" -mfmt=c -o ${HEADER_PATH}
+        DEPENDS ${SHADER}
+        COMMENT "Generating embedded header ${HEADER_NAME}"
+    )
+    list(APPEND GENERATED_HEADERS ${HEADER_PATH})
+endforeach()
+
+# Create a single target to trigger all shader work
+add_custom_target(CompileShaders DEPENDS ${SPV_OUTPUTS} ${GENERATED_HEADERS})
 add_dependencies(${PROJECT_NAME} CompileShaders)
+
+# Tell the executable about the generated headers
+target_sources(${PROJECT_NAME} PRIVATE ${GENERATED_HEADERS})
+
+# Make sure your target depends on this generated file
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 
 # This tells anyone who includes this directory where the assets are
 set(VULKANISED_ASSETS_PATH "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "Path to Vulkanised assets")

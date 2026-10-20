@@ -28,45 +28,32 @@ int Vulkanised::VulkanRenderer::init(GLFWwindow* newWindow)
 		createSwapchain();
 		createRenderPass();
 		createDescriptorSetLayout();
-		createPushConstantRange();
 		createGraphicsPipeline();
 		createDepthBufferImage();
 		createFramebuffers();
 		createCommandPool();
 		createCommandBuffers();
 		createTextureSampler();
+		createUnifiedBuffers();
 		//allocateDynamicBufferTransferSpace();
 		createUniformBuffers();
+		createSSBOs();
 		createDescriptorPool();
 		createDescriptorSets();
 		//recordCommands();
 		createSynchronisation();
 
+		// UBO DEFAULTS
+		// - View & Projection
 		m_UboViewProjection.projection = glm::perspective(glm::radians(45.0f), (float)m_SwapchainExtent.width / (float)m_SwapchainExtent.height, 0.1f, 100.0f);
 		m_UboViewProjection.view = glm::lookAt(glm::vec3(2.0f, 0.0f, 2.0f), glm::vec3(0.0f, 0.0f, -2.0f), glm::vec3(0.0f, 1.0f, 0.0f));
 
 		m_UboViewProjection.projection[1][1] *= -1;
 
-		// Create a mesh
-		// Vertex data
-		std::vector<Vertex> meshVertices{
-			{ { -0.4, 0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 1.0f, 1.0f } },		// 0
-			{ { -0.4, -0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 1.0f, 0.0f } },	// 1
-			{ { 0.4, -0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 0.0f, 0.0f } },		// 2
-			{ { 0.4, 0.4, 0.0 },{ 1.0f, 0.0f, 0.0f },{ 0.0f, 1.0f } },		// 3
-		};
-
-		std::vector<Vertex> meshVertices2{
-			{ { -0.25, 0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 1.0f, 1.0f } },	// 0
-			{ { -0.25, -0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 1.0f, 0.0f } },	// 1
-			{ { 0.25, -0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 0.0f, 0.0f } },    // 2
-			{ { 0.25, 0.6, 0.0 },{ 0.0f, 0.0f, 1.0f },{ 0.0f, 1.0f } },		// 3
-		};
-
-		// Index data
-		std::vector<uint32_t> meshIndices{ {0, 1, 2, 2, 3, 0} };
-		m_MeshList.push_back(make_unique<Mesh>(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool, &meshVertices, &meshIndices, createTexture("bibi.jpg")));
-		m_MeshList.push_back(make_unique<Mesh>(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool, &meshVertices2, &meshIndices, createTexture("trump.jpg")));
+		// - LIGHTING DEFAULTS
+		m_UboViewProjection.lightPos = glm::vec4(0.0f, 2.0f, 2.0f, 1.0f); // Light floating up and forward
+		m_UboViewProjection.viewPos = glm::vec4(2.0f, 0.0f, 2.0f, 1.0f);  // Must match the lookAt camera pos!
+		m_UboViewProjection.lightColor = glm::vec4(1.0f, 1.0f, 1.0f, 1.0f); // White light
 	}
 	catch (const std::runtime_error &e)
 	{
@@ -77,80 +64,118 @@ int Vulkanised::VulkanRenderer::init(GLFWwindow* newWindow)
 	return EXIT_SUCCESS;
 }
 
-void Vulkanised::VulkanRenderer::draw()
+uint32_t Vulkanised::VulkanRenderer::loadMesh(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices, int texId)
 {
-	// -- GET NEXT IMAGE --
-	// Wait for given fence to signal (open) from last draw before continuing
+	// --- ADD THIS SAFEGUARD ---
+	if (vertices.empty() || indices.empty())
+	{
+		LOGE("Attempted to load a mesh with 0 vertices or 0 indices! Aborting load.");
+		return 0; // Return a default/fallback mesh ID instead of crashing
+	}
+
+	VkDeviceSize vertexSize = sizeof(Vertex) * vertices.size();
+	VkDeviceSize indexSize = sizeof(uint32_t) * indices.size();
+
+	// 1. Stage Vertices
+	VkBuffer vStagingBuffer;
+	VkDeviceMemory vStagingMemory;
+	Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, vertexSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &vStagingBuffer, &vStagingMemory);
+	void* data;
+	vkMapMemory(m_MainDevice.logicalDevice, vStagingMemory, 0, vertexSize, 0, &data);
+	memcpy(data, vertices.data(), (size_t)vertexSize);
+	vkUnmapMemory(m_MainDevice.logicalDevice, vStagingMemory);
+
+	// 2. Stage Indices
+	VkBuffer iStagingBuffer;
+	VkDeviceMemory iStagingMemory;
+	Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, indexSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &iStagingBuffer, &iStagingMemory);
+	vkMapMemory(m_MainDevice.logicalDevice, iStagingMemory, 0, indexSize, 0, &data);
+	memcpy(data, indices.data(), (size_t)indexSize);
+	vkUnmapMemory(m_MainDevice.logicalDevice, iStagingMemory);
+
+	// 3. Copy to Unified Buffers (Using the new offsets)
+	Utilities::Vulkan::copyBuffer(m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool, vStagingBuffer, m_GlobalVertexBuffer, vertexSize, m_CurrentVertexOffset * sizeof(Vertex));
+	Utilities::Vulkan::copyBuffer(m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool, iStagingBuffer, m_GlobalIndexBuffer, indexSize, m_CurrentIndexOffset * sizeof(uint32_t));
+
+	// Cleanup staging
+	vkDestroyBuffer(m_MainDevice.logicalDevice, vStagingBuffer, nullptr);
+	vkFreeMemory(m_MainDevice.logicalDevice, vStagingMemory, nullptr);
+	vkDestroyBuffer(m_MainDevice.logicalDevice, iStagingBuffer, nullptr);
+	vkFreeMemory(m_MainDevice.logicalDevice, iStagingMemory, nullptr);
+
+	// 4. Save the Asset Descriptor
+	MeshAsset asset{};
+	asset.firstIndex = m_CurrentIndexOffset;
+	asset.indexCount = static_cast<uint32_t>(indices.size());
+	asset.vertexOffset = m_CurrentVertexOffset;
+	asset.texId = texId;
+	m_Meshes.push_back(asset);
+
+	// 5. Advance Offsets
+	m_CurrentVertexOffset += static_cast<uint32_t>(vertices.size());
+	m_CurrentIndexOffset += static_cast<uint32_t>(indices.size());
+
+	return static_cast<uint32_t>(m_Meshes.size() - 1);
+}
+
+void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& instances)
+{
+	// Wait & Reset Fences
 	vkWaitForFences(m_MainDevice.logicalDevice, 1, &m_DrawFences[m_CurrentFrame], VK_TRUE, std::numeric_limits<uint64_t>::max());
-	// Manually reset (close) fences
 	vkResetFences(m_MainDevice.logicalDevice, 1, &m_DrawFences[m_CurrentFrame]);
 
-	// Get index of next image to be drawn to, and signal semaphore when ready to be drawn to
 	uint32_t imageIndex{ 0 };
 	VkResult result = vkAcquireNextImageKHR(m_MainDevice.logicalDevice, m_Swapchain, std::numeric_limits<uint64_t>::max(), m_ImageAvailable[m_CurrentFrame], VK_NULL_HANDLE, &imageIndex);
-	if (result == VK_ERROR_OUT_OF_DATE_KHR)
-	{
-		recreateSwapchain();
-		return;
-	}
-	else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
-	{
-		constexpr const char* message{ "failed to acquire next image" };
-		LOGE(message);
-		throw std::runtime_error(message);
+	if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapchain(); return; }
+
+	// 1. Sort the incoming ECS payload to maximize batching (Group by Mesh, then Texture)
+	std::vector<RenderInstance> sortedInstances = instances;
+	std::sort(sortedInstances.begin(), sortedInstances.end(), [](const RenderInstance& a, const RenderInstance& b) {
+		if (a.meshID != b.meshID) return a.meshID < b.meshID;
+		return a.textureID < b.textureID;
+		});
+
+	// 2. Upload ALL transforms to the persistently mapped SSBO
+	glm::mat4* ssboData = (glm::mat4*)m_SSBOMapped[imageIndex];
+	for (size_t i = 0; i < sortedInstances.size(); ++i) {
+		ssboData[i] = sortedInstances[i].transform;
 	}
 
-	recordCommands(imageIndex);
+	// 3. Update Camera & Record specific commands for this sorted layout
 	updateUniformBuffers(imageIndex);
 
-	// -- SUBMIT COMMAND BUFFER TO RENDER --
-	// Queue submission information
+	// We pass the sorted list directly to recordCommands now
+	vkResetCommandBuffer(m_CommandBuffers[imageIndex], 0);
+	// Note: You must modify recordCommands signature to accept the sortedInstances. Let's inline the recording here for clarity or pass it.
+	// Assuming recordCommands is modified to take the list:
+	recordCommands(imageIndex, sortedInstances);
+
+	// Submission and Present remain identical to old draw()
 	VkSubmitInfo submitInfo{};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfo.waitSemaphoreCount = 1;										// Number of semaphores to wait on
-	submitInfo.pWaitSemaphores = &m_ImageAvailable[m_CurrentFrame];			// List of semaphores to wait on
-	VkPipelineStageFlags waitStages[] = {
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-	};
-	submitInfo.pWaitDstStageMask = waitStages;							// Stages to check semaphores at
-	submitInfo.commandBufferCount = 1;									// Number of command buffers to submit
-	submitInfo.pCommandBuffers = &m_CommandBuffers[imageIndex];			// Command buffer to submit
-	submitInfo.signalSemaphoreCount = 1;								// Number of semaphores to signal
-	submitInfo.pSignalSemaphores = &m_RenderFinished[imageIndex];	// Semaphores to signal when command buffer finishes
+	submitInfo.waitSemaphoreCount = 1;
+	submitInfo.pWaitSemaphores = &m_ImageAvailable[m_CurrentFrame];
+	VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	submitInfo.pWaitDstStageMask = waitStages;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &m_CommandBuffers[imageIndex];
+	submitInfo.signalSemaphoreCount = 1;
+	submitInfo.pSignalSemaphores = &m_RenderFinished[imageIndex];
 
-	// Submit command buffer to queue
 	if (vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, m_DrawFences[m_CurrentFrame]) != VK_SUCCESS)
-	{
-		constexpr const char* message{ "failed to submit command buffer to queue" };
-		LOGE(message);
-		throw std::runtime_error(message);
-	}
+		throw std::runtime_error("failed to submit command buffer to queue");
 
-	// -- PRESENT RENDERED IMAGE TO SCREEN --
 	VkPresentInfoKHR presentInfo{};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-	presentInfo.waitSemaphoreCount = 1;									// Number of semaphores to wait on
-	presentInfo.pWaitSemaphores = &m_RenderFinished[imageIndex];	// Semaphores to wait on
-	presentInfo.swapchainCount = 1;										// Number of swapchains to present to
-	presentInfo.pSwapchains = &m_Swapchain;								// Swapchains to present images to
-	presentInfo.pImageIndices = &imageIndex;							// Index of images in swapchains to present
+	presentInfo.waitSemaphoreCount = 1;
+	presentInfo.pWaitSemaphores = &m_RenderFinished[imageIndex];
+	presentInfo.swapchainCount = 1;
+	presentInfo.pSwapchains = &m_Swapchain;
+	presentInfo.pImageIndices = &imageIndex;
 
-	// Present image
 	VkResult presentResult = vkQueuePresentKHR(m_PresentationQueue, &presentInfo);
-	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR)
-	{
-		// The swapchain became out of date since we acquired the image
-		recreateSwapchain();
-		return; // Stop this frame and start over with the new swapchain
-	}
-	else if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR)
-	{
-		constexpr const char* message{ "failed to present image to presentation queue" };
-		LOGE(message);
-		throw std::runtime_error(message);
-	}
+	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapchain(); return; }
 
-	// Get next frame (use % Utilities::Vulkan::c_MaxFrameDraws to keep value below Utilities::Vulkan::c_MaxFrameDraws)
 	m_CurrentFrame = (m_CurrentFrame + 1) % Utilities::Vulkan::c_MaxFrameDraws;
 }
 
@@ -196,15 +221,6 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 		}
 	}
 
-	// Destroy the meshes
-	if (!m_MeshList.empty()) 
-	{
-		for (auto& mesh : m_MeshList)
-		{
-			mesh.reset();
-		}
-	}
-
 	if (m_DescriptorPool != VK_NULL_HANDLE)
 	{
 		vkDestroyDescriptorPool(m_MainDevice.logicalDevice, m_DescriptorPool, nullptr);
@@ -217,6 +233,29 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 	}
 
 	cleanupSwapchain();
+
+	// Destroy Unified Geometry Buffers (These survive window resizes, so they only die on app exit)
+	if (m_GlobalVertexBuffer != VK_NULL_HANDLE)
+	{
+		vkDestroyBuffer(m_MainDevice.logicalDevice, m_GlobalVertexBuffer, nullptr);
+		m_GlobalVertexBuffer = VK_NULL_HANDLE;
+	}
+	if (m_GlobalVertexBufferMemory != VK_NULL_HANDLE)
+	{
+		vkFreeMemory(m_MainDevice.logicalDevice, m_GlobalVertexBufferMemory, nullptr);
+		m_GlobalVertexBufferMemory = VK_NULL_HANDLE;
+	}
+
+	if (m_GlobalIndexBuffer != VK_NULL_HANDLE)
+	{
+		vkDestroyBuffer(m_MainDevice.logicalDevice, m_GlobalIndexBuffer, nullptr);
+		m_GlobalIndexBuffer = VK_NULL_HANDLE;
+	}
+	if (m_GlobalIndexBufferMemory != VK_NULL_HANDLE)
+	{
+		vkFreeMemory(m_MainDevice.logicalDevice, m_GlobalIndexBufferMemory, nullptr);
+		m_GlobalIndexBufferMemory = VK_NULL_HANDLE;
+	}
 
 	// Destroy semaphores and fences
 	for (size_t i{ 0 }; i < Utilities::Vulkan::c_MaxFrameDraws; i++)
@@ -297,6 +336,39 @@ Vulkanised::VulkanRenderer::~VulkanRenderer()
 {
 }
 
+void Vulkanised::VulkanRenderer::createUnifiedBuffers()
+{
+	// Create one massive 64MB buffer for all vertices
+	Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, UNIFIED_BUFFER_SIZE,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &m_GlobalVertexBuffer, &m_GlobalVertexBufferMemory);
+
+	// Create one massive 64MB buffer for all indices
+	Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, UNIFIED_BUFFER_SIZE,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &m_GlobalIndexBuffer, &m_GlobalIndexBufferMemory);
+}
+
+void Vulkanised::VulkanRenderer::createSSBOs()
+{
+	VkDeviceSize bufferSize = sizeof(glm::mat4) * MAX_INSTANCES;
+
+	m_SSBO.resize(m_SwapchainImages.size());
+	m_SSBOMemory.resize(m_SwapchainImages.size());
+	m_SSBOMapped.resize(m_SwapchainImages.size());
+
+	for (size_t i = 0; i < m_SwapchainImages.size(); i++)
+	{
+		Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, bufferSize,
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			&m_SSBO[i], &m_SSBOMemory[i]);
+
+		// Map persistently! We never unmap this, saving huge CPU overhead
+		vkMapMemory(m_MainDevice.logicalDevice, m_SSBOMemory[i], 0, bufferSize, 0, &m_SSBOMapped[i]);
+	}
+}
+
 void Vulkanised::VulkanRenderer::logTrackers() const noexcept
 {
 	if (!Utilities::Vulkan::enableValidationLayers) { return; }
@@ -309,9 +381,7 @@ void Vulkanised::VulkanRenderer::createInstance()
 #ifdef _WIN32
 	if (Utilities::Vulkan::enableValidationLayers && !checkValidationLayerSupport())
 	{
-		constexpr const char* message{ "validation layers requested, but not available!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("validation layers requested, but not available!");
 	}
 
 #elif defined(__APPLE__)    //Validation layers on Mac sort of kinda working, but also not?
@@ -365,9 +435,7 @@ void Vulkanised::VulkanRenderer::createInstance()
 	// Check if instance extensions are supported...
 	if(!checkInstanceExtensionSupport(&instanceExtensions))
 	{
-		constexpr const char* message{ "VkInstance does not support required extensions!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("VkInstance does not support required extensions!");
 	}
 
 	createInfo.enabledExtensionCount = static_cast<uint32_t>(instanceExtensions.size());
@@ -392,9 +460,7 @@ void Vulkanised::VulkanRenderer::createInstance()
 	// Create instance
 	if (vkCreateInstance(&createInfo, nullptr, &m_Instance) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "Failed to create a Vulkan Instance!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("Failed to create a Vulkan Instance!");
 	}
 }
 
@@ -437,9 +503,7 @@ void Vulkanised::VulkanRenderer::createLogicalDevice()
 	// Create the logical device for the given physical device
 	if (vkCreateDevice(m_MainDevice.physicalDevice, &deviceCreateInfo, nullptr, &m_MainDevice.logicalDevice) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "Failed to create a Logical Device!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("Failed to create a Logical Device!");
 	}
 
 	// Queues are created at the same time as the device...
@@ -459,9 +523,7 @@ void Vulkanised::VulkanRenderer::setupDebugMessenger()
 
 	if (Utilities::Vulkan::CreateDebugUtilsMessengerEXT(m_Instance, &createInfo, nullptr, &m_DebugMessenger) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to set up debug messenger!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to set up debug messenger!");
 	}
 	else
 	{
@@ -474,9 +536,7 @@ void Vulkanised::VulkanRenderer::createSurface()
 	// Create Surface (creates a surface create info struct, runs the create surface function, returns VkResult)
 	if (glfwCreateWindowSurface(m_Instance, m_Window.load().get(), nullptr, &m_Surface) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to create a surface" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to create a surface");
 	}
 }
 
@@ -542,9 +602,7 @@ void Vulkanised::VulkanRenderer::createSwapchain()
 	// Create actual swapchain
 	if (vkCreateSwapchainKHR(m_MainDevice.logicalDevice, &swapchainCreateInfo, nullptr, &m_Swapchain) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to create a swapchain" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to create a swapchain");
 	}
 
 	// Store for later reference
@@ -658,84 +716,61 @@ void Vulkanised::VulkanRenderer::createRenderPass()
 
 	if (vkCreateRenderPass(m_MainDevice.logicalDevice, &renderPassCreateInfo, nullptr, &m_RenderPass) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to create render pass!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to create render pass!");
 	}
 }
 
 void Vulkanised::VulkanRenderer::createDescriptorSetLayout()
 {
-	// UNIFORM VALUES DESCRIPTOR SET LAYOUT
-	// UboViewProjection Binding Info
+	// ViewProjection Binding
 	VkDescriptorSetLayoutBinding vpLayoutBinding = {};
-	vpLayoutBinding.binding = 0;											// Binding point in shader (designated by binding number in shader)
-	vpLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;		// Type of descriptor (uniform, dynamic uniform, image sampler, etc)
-	vpLayoutBinding.descriptorCount = 1;									// Number of descriptors for binding
-	vpLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;				// Shader stage to bind to
-	vpLayoutBinding.pImmutableSamplers = nullptr;							// For Texture: Can make sampler data unchangeable (immutable) by specifying in layout
+	vpLayoutBinding.binding = 0;
+	vpLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	vpLayoutBinding.descriptorCount = 1;
+	vpLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	// Model Binding Info
-	//VkDescriptorSetLayoutBinding modelLayoutBinding = {};
-	//modelLayoutBinding.binding = 1;
-	//modelLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-	//modelLayoutBinding.descriptorCount = 1;
-	//modelLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-	//modelLayoutBinding.pImmutableSamplers = nullptr;
+	// SSBO Transform Binding
+	VkDescriptorSetLayoutBinding ssboLayoutBinding = {};
+	ssboLayoutBinding.binding = 1;
+	ssboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	ssboLayoutBinding.descriptorCount = 1;
+	ssboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 
-	std::vector<VkDescriptorSetLayoutBinding> layoutBindings = { vpLayoutBinding };
+	std::vector<VkDescriptorSetLayoutBinding> layoutBindings = { vpLayoutBinding, ssboLayoutBinding };
 
-	// Create Descriptor Set Layout with given bindings
 	VkDescriptorSetLayoutCreateInfo layoutCreateInfo{};
 	layoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutCreateInfo.bindingCount = static_cast<uint32_t>(layoutBindings.size());	// Number of binding infos
-	layoutCreateInfo.pBindings = layoutBindings.data();								// Array of binding infos
+	layoutCreateInfo.bindingCount = static_cast<uint32_t>(layoutBindings.size());
+	layoutCreateInfo.pBindings = layoutBindings.data();
 
-	// Create Descriptor Set Layout 
 	if (vkCreateDescriptorSetLayout(m_MainDevice.logicalDevice, &layoutCreateInfo, nullptr, &m_DescriptorSetLayout) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to create descriptor set layout!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to create descriptor set layout!");
 	}
 
-	// CREATE TEXTURE SAMPLER DESCRIPTOR SET LAYOUT
-	// Texture binding info
+	// (Keep the Texture Sampler Layout creation exactly as it was)
 	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
 	samplerLayoutBinding.binding = 0;
 	samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	samplerLayoutBinding.descriptorCount = 1;
 	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	samplerLayoutBinding.pImmutableSamplers = nullptr;
 
-	// Create a Descriptor Set Layout with given bindings for texture
 	VkDescriptorSetLayoutCreateInfo textureLayoutCreateInfo = {};
 	textureLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	textureLayoutCreateInfo.bindingCount = 1;
 	textureLayoutCreateInfo.pBindings = &samplerLayoutBinding;
 
-	// Create Descriptor Set Layout
 	if (vkCreateDescriptorSetLayout(m_MainDevice.logicalDevice, &textureLayoutCreateInfo, nullptr, &m_SamplerSetLayout) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "Failed to create a Descriptor Set Layout!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("Failed to create a Descriptor Set Layout!");
 	}
-}
-
-void Vulkanised::VulkanRenderer::createPushConstantRange()
-{
-	// Define push constant values (no 'create' needed!)
-	m_PushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;	// Shader stage push constant will go to
-	m_PushConstantRange.offset = 0;									// Offset into given data to pass to push constant
-	m_PushConstantRange.size = sizeof(Model);						// Size of data being passed
 }
 
 void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 {
 	// Read in SPIR-V code of shaders
-	auto vertexShaderCode = Utilities::File::readFile("src/shaders/vert.spv");
-	auto fragmentShaderCode = Utilities::File::readFile("src/shaders/frag.spv");
+	auto vertexShaderCode = Utilities::File::readFile("src/shaders/bin/shader.vert.spv");
+	auto fragmentShaderCode = Utilities::File::readFile("src/shaders/bin/shader.frag.spv");
 
 	// Create Shader Modules to link to Graphics Pipeline
 	VkShaderModule vertexShaderModule = createShaderModule(vertexShaderCode);
@@ -764,7 +799,7 @@ void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 	VkVertexInputBindingDescription bindingDescription{ Vertex::getBindingDescription() };
 
 	// How the data for an attribute is defined within a vertex
-	std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{ Vertex::getAttributeDescriptions() };
+	std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions{ Vertex::getAttributeDescriptions() };
 
 	// -- VERTEX INPUT --
 	VkPipelineVertexInputStateCreateInfo vertexInputCreateInfo{};
@@ -879,15 +914,13 @@ void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 	pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
 	pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
-	pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-	pipelineLayoutCreateInfo.pPushConstantRanges = &m_PushConstantRange;
+	pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
+	pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
 
 	// Create pipeline layout
 	if (vkCreatePipelineLayout(m_MainDevice.logicalDevice, &pipelineLayoutCreateInfo, nullptr, &m_PipelineLayout) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to create pipeline layout!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to create pipeline layout!");
 	}
 
 	// -- DEPTH STENCIL TESTING --
@@ -923,9 +956,7 @@ void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 	// Create graphics pipeline
 	if (vkCreateGraphicsPipelines(m_MainDevice.logicalDevice, VK_NULL_HANDLE, 1, &graphicsPipelineCreateInfo, nullptr, &m_GraphicsPipeline) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to create pipeline(s)!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to create pipeline(s)!");
 	}
 
 	// Destroy shader modules, no longer needed after pipeline created
@@ -973,9 +1004,7 @@ void Vulkanised::VulkanRenderer::createFramebuffers()
 
 		if (vkCreateFramebuffer(m_MainDevice.logicalDevice, &framebufferCreateInfo, nullptr, &m_SwapchainFramebuffers[i]) != VK_SUCCESS)
 		{
-			constexpr const char* message{ "failed to create a swapchain framebuffer" };
-			LOGE(message);
-			throw std::runtime_error(message);
+			LOGNTHROW("failed to create a swapchain framebuffer");
 		}
 	}
 }
@@ -993,9 +1022,7 @@ void Vulkanised::VulkanRenderer::createCommandPool()
 	// Create a graphics queue family command pool
 	if (vkCreateCommandPool(m_MainDevice.logicalDevice, &poolCreateInfo, nullptr, &m_GraphicsCommandPool) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to create command pool" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to create command pool");
 	}
 }
 
@@ -1014,9 +1041,7 @@ void Vulkanised::VulkanRenderer::createCommandBuffers()
 	// Allocate command buffers and place handles in array of buffers
 	if (vkAllocateCommandBuffers(m_MainDevice.logicalDevice, &commandBufferAllocInfo, m_CommandBuffers.data()) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to allocate command buffers" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to allocate command buffers");
 	}
 }
 
@@ -1041,9 +1066,7 @@ void Vulkanised::VulkanRenderer::createTextureSampler()
 
 	if (vkCreateSampler(m_MainDevice.logicalDevice, &samplerCreateInfo, nullptr, &m_TextureSampler) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "Filed to create a Texture Sampler!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("Filed to create a Texture Sampler!");
 	}
 }
 
@@ -1074,9 +1097,7 @@ void Vulkanised::VulkanRenderer::createSynchronisation()
 			//vkCreateSemaphore(m_MainDevice.logicalDevice, &semaphoreCreateInfo, nullptr, &m_RenderFinished[i]) != VK_SUCCESS ||
 			vkCreateFence(m_MainDevice.logicalDevice, &fenceCreateInfo, nullptr, &m_DrawFences[i]) != VK_SUCCESS)
 		{
-			constexpr const char* message{ "failed to create image available semaphore(s) and/or draw fence(s)" };
-			LOGE(message);
-			throw std::runtime_error(message);
+			LOGNTHROW("failed to create image available semaphore(s) and/or draw fence(s)");
 		}
 	}
 
@@ -1085,9 +1106,7 @@ void Vulkanised::VulkanRenderer::createSynchronisation()
 	{
 		if (vkCreateSemaphore(m_MainDevice.logicalDevice, &semaphoreCreateInfo, nullptr, &m_RenderFinished[i]) != VK_SUCCESS)
 		{
-			constexpr const char* message{ "failed to create render finished semaphore(s)" };
-			LOGE(message);
-			throw std::runtime_error(message);
+			LOGNTHROW("failed to create render finished semaphore(s)");
 		}
 	}
 }
@@ -1145,8 +1164,12 @@ void Vulkanised::VulkanRenderer::createDescriptorPool()
 	//modelPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 	//modelPoolSize.descriptorCount = static_cast<uint32_t>(m_ModelDUniformBuffer.size());
 
+	VkDescriptorPoolSize ssboPoolSize = {};
+	ssboPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	ssboPoolSize.descriptorCount = static_cast<uint32_t>(m_SSBO.size());
+
 	// List of pool sizes
-	std::vector<VkDescriptorPoolSize> descriptorPoolSizes = { vpPoolSize };
+	std::vector<VkDescriptorPoolSize> descriptorPoolSizes = { vpPoolSize, ssboPoolSize };
 
 	// Data to create descriptor pool
 	VkDescriptorPoolCreateInfo poolCreateInfo{};
@@ -1158,9 +1181,7 @@ void Vulkanised::VulkanRenderer::createDescriptorPool()
 	// Create descriptor pool
 	if (vkCreateDescriptorPool(m_MainDevice.logicalDevice, &poolCreateInfo, nullptr, &m_DescriptorPool) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to create the uniform descriptor pool" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to create the uniform descriptor pool");
 	}
 
 	// CREATE SAMPLER DESCRIPTOR POOL
@@ -1177,9 +1198,7 @@ void Vulkanised::VulkanRenderer::createDescriptorPool()
 
 	if (vkCreateDescriptorPool(m_MainDevice.logicalDevice, &samplerPoolCreateInfo, nullptr, &m_SamplerDescriptorPool) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "Failed to create a the sampler descriptor Pool!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("Failed to create a the sampler descriptor Pool!");
 	}
 }
 
@@ -1200,9 +1219,7 @@ void Vulkanised::VulkanRenderer::createDescriptorSets()
 	// Allocate descriptor sets (multiple)
 	if (vkAllocateDescriptorSets(m_MainDevice.logicalDevice, &setAllocInfo, m_DescriptorSets.data()) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to allocate descriptor sets" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to allocate descriptor sets");
 	}
 
 	// Update all of descriptor set buffer bindings
@@ -1224,6 +1241,21 @@ void Vulkanised::VulkanRenderer::createDescriptorSets()
 		vpSetWrite.descriptorCount = 1;									// Amount to update
 		vpSetWrite.pBufferInfo = &vpBufferInfo;							// Information about buffer data to bind
 
+		// SSBO DESCRIPTOR -> ECS related
+		VkDescriptorBufferInfo ssboInfo{};
+		ssboInfo.buffer = m_SSBO[i];
+		ssboInfo.offset = 0;
+		ssboInfo.range = sizeof(glm::mat4) * MAX_INSTANCES;
+
+		VkWriteDescriptorSet ssboSetWrite = {};
+		ssboSetWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		ssboSetWrite.dstSet = m_DescriptorSets[i];
+		ssboSetWrite.dstBinding = 1;
+		ssboSetWrite.dstArrayElement = 0;
+		ssboSetWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		ssboSetWrite.descriptorCount = 1;
+		ssboSetWrite.pBufferInfo = &ssboInfo;
+
 		// MODEL DESCRIPTOR
 		// Model Buffer Binding Info
 		//VkDescriptorBufferInfo modelBufferInfo = {};
@@ -1241,7 +1273,7 @@ void Vulkanised::VulkanRenderer::createDescriptorSets()
 		//modelSetWrite.pBufferInfo = &modelBufferInfo;
 
 		// List of Descriptor Set Writes
-		std::vector<VkWriteDescriptorSet> setWrites = { vpSetWrite };
+		std::vector<VkWriteDescriptorSet> setWrites = { vpSetWrite, ssboSetWrite };
 
 		// Update the descriptor sets with new buffer/binding info
 		vkUpdateDescriptorSets(m_MainDevice.logicalDevice, static_cast<uint32_t>(setWrites.size()), setWrites.data(), 0, nullptr);
@@ -1283,32 +1315,53 @@ void Vulkanised::VulkanRenderer::cleanupSwapchain()
 
 	// 2. Destroy Uniform Buffers (since they are per-swapchain-image)
 	// Uniform buffer and uniform buffer memory are always the same size, since they're created at the same time, in the same loop. This might not look safe in isolation, but it should be.
-	for (size_t i{ 0 }; i < m_SwapchainImages.size(); i++)
+	for (size_t i{ 0 }; i < m_VpUniformBuffer.size(); i++)
 	{
 		if (m_VpUniformBuffer[i] != VK_NULL_HANDLE)
 		{
 			vkDestroyBuffer(m_MainDevice.logicalDevice, m_VpUniformBuffer[i], nullptr);
 			m_VpUniformBuffer[i] = VK_NULL_HANDLE;
 		}
+	}
+	m_VpUniformBuffer.clear();
+
+	for (size_t i{ 0 }; i < m_VpUniformBufferMemory.size(); i++)
+	{
 		if (m_VpUniformBufferMemory[i] != VK_NULL_HANDLE)
 		{
 			vkFreeMemory(m_MainDevice.logicalDevice, m_VpUniformBufferMemory[i], nullptr);
 			m_VpUniformBufferMemory[i] = VK_NULL_HANDLE;
 		}
-
-		//if (m_ModelDUniformBuffer[i] != VK_NULL_HANDLE)
-		//{
-		//	vkDestroyBuffer(m_MainDevice.logicalDevice, m_ModelDUniformBuffer[i], nullptr);
-		//	m_ModelDUniformBuffer[i] = VK_NULL_HANDLE;
-		//}
-		//if (m_ModelDUniformBufferMemory[i] != VK_NULL_HANDLE)
-		//{
-		//	vkFreeMemory(m_MainDevice.logicalDevice, m_ModelDUniformBufferMemory[i], nullptr);
-		//	m_ModelDUniformBufferMemory[i] = VK_NULL_HANDLE;
-		//}
 	}
-	m_VpUniformBuffer.clear();
 	m_VpUniformBufferMemory.clear();
+
+	// 2.5 ECS related: m_GlobalIndexBuffer, m_GlobalVertexBuffer and m_SSBO
+	// 2.5 Destroy SSBOs and unmap memory
+	for (size_t i = 0; i < m_SSBO.size(); i++)
+	{
+		// Unmap the persistent mapping safely before freeing memory
+		if (m_SSBOMemory[i] != VK_NULL_HANDLE)
+		{
+			vkUnmapMemory(m_MainDevice.logicalDevice, m_SSBOMemory[i]);
+			m_SSBOMapped[i] = nullptr;
+		}
+
+		if (m_SSBO[i] != VK_NULL_HANDLE)
+		{
+			vkDestroyBuffer(m_MainDevice.logicalDevice, m_SSBO[i], nullptr);
+			m_SSBO[i] = VK_NULL_HANDLE;
+		}
+
+		if (m_SSBOMemory[i] != VK_NULL_HANDLE)
+		{
+			vkFreeMemory(m_MainDevice.logicalDevice, m_SSBOMemory[i], nullptr);
+			m_SSBOMemory[i] = VK_NULL_HANDLE;
+		}
+	}
+	m_SSBO.clear();
+	m_SSBOMemory.clear();
+	m_SSBOMapped.clear();
+
 
 	// 3. Destroy Swapchain Image Views
 	for (auto& image : m_SwapchainImages)
@@ -1371,6 +1424,7 @@ void Vulkanised::VulkanRenderer::recreateSwapchain()
 	createSwapchain();           // Updates m_SwapchainExtent and m_SwapchainImages
 	createDepthBufferImage();    // Re-creates depth buffer for new size
 	createFramebuffers();        // Re-fills m_SwapchainFramebuffers
+	createSSBOs();				 // This is needed here too... (just needs to be after swapchain creation)
 	createUniformBuffers();      // Re-fills m_VpUniformBuffer and m_VpUniformBufferMemory
 	createCommandPool();         // Re-creates the pool (or just reset it)
 	createCommandBuffers();      // Re-fills m_CommandBuffers to match new image count
@@ -1379,7 +1433,7 @@ void Vulkanised::VulkanRenderer::recreateSwapchain()
 	createDescriptorSets();
 }
 
-void Vulkanised::VulkanRenderer::recordCommands(uint32_t currentImage)
+void Vulkanised::VulkanRenderer::recordCommands(uint32_t currentImage, const std::vector<RenderInstance>& instances)
 {
 	// Information about how to begin each command buffer
 	VkCommandBufferBeginInfo commandBufferBeginInfo{};
@@ -1405,75 +1459,76 @@ void Vulkanised::VulkanRenderer::recordCommands(uint32_t currentImage)
 	// Start recording commands to command buffer!
 	if (vkBeginCommandBuffer(m_CommandBuffers[currentImage], &commandBufferBeginInfo) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "Failed to start recording a Command Buffer!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("Failed to start recording a Command Buffer!");
 	}
 
-	// Begin Render Pass
 	vkCmdBeginRenderPass(m_CommandBuffers[currentImage], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-	// 1. DEFINE THE CURRENT VIEWPORT
 	VkViewport viewport{};
-	viewport.x = 0.0f;
-	viewport.y = 0.0f;
-	viewport.width = (float)m_SwapchainExtent.width;
-	viewport.height = (float)m_SwapchainExtent.height;
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
-
-	// 2. DEFINE THE CURRENT SCISSOR
-	VkRect2D scissor{};
-	scissor.offset = { 0, 0 };
-	scissor.extent = m_SwapchainExtent;
-
-	// 3. SET THE DYNAMIC STATES
+	viewport.width = (float)m_SwapchainExtent.width; viewport.height = (float)m_SwapchainExtent.height;
+	viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
+	VkRect2D scissor{}; scissor.extent = m_SwapchainExtent;
 	vkCmdSetViewport(m_CommandBuffers[currentImage], 0, 1, &viewport);
 	vkCmdSetScissor(m_CommandBuffers[currentImage], 0, 1, &scissor);
 
-	// Bind Pipeline to be used in render pass
 	vkCmdBindPipeline(m_CommandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
 
-	for (size_t j{ 0 }; j < m_MeshList.size(); j++)
+	// BIND UNIFIED BUFFERS ONCE!
+	VkBuffer vertexBuffers[] = { m_GlobalVertexBuffer };
+	VkDeviceSize offsets[] = { 0 };
+	vkCmdBindVertexBuffers(m_CommandBuffers[currentImage], 0, 1, vertexBuffers, offsets);
+	vkCmdBindIndexBuffer(m_CommandBuffers[currentImage], m_GlobalIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+	// INSTANCED RENDERING BATCH LOOP
+	size_t firstInstance = 0;
+	while (firstInstance < instances.size())
 	{
-		VkBuffer vertexBuffers[] = { m_MeshList[j]->getVertexBuffer() };					// Buffers to bind
-		VkDeviceSize offsets[] = { 0 };												// Offsets into buffers being bound
-		vkCmdBindVertexBuffers(m_CommandBuffers[currentImage], 0, 1, vertexBuffers, offsets);	// Command to bind vertex buffer before drawing with them
+		uint32_t currentMesh = instances[firstInstance].meshID;
+		uint32_t currentTex = instances[firstInstance].textureID;
 
-		// Bind mesh index buffer, with 0 offset and using the uint32 type
-		vkCmdBindIndexBuffer(m_CommandBuffers[currentImage], m_MeshList[j]->getIndexBuffer(), 0, VK_INDEX_TYPE_UINT32);
+		// Count how many consecutive identical instances we have
+		uint32_t instanceCount = 0;
+		while (firstInstance + instanceCount < instances.size() &&
+			instances[firstInstance + instanceCount].meshID == currentMesh &&
+			instances[firstInstance + instanceCount].textureID == currentTex)
+		{
+			instanceCount++;
+		}
 
-		// Dynamic Offset Amount
-		// uint32_t dynamicOffset = static_cast<uint32_t>(modelUniformAlignment) * j;
+		// --- SAFETY GUARDS ---
+		// If the ECS passed a garbage Mesh ID or an aborted asset, skip this entire batch!
+		if (currentMesh >= m_Meshes.size())
+		{
+			LOGW("Invalid mesh ID {} requested for render. Skipping batch.", currentMesh);
+			firstInstance += instanceCount;
+			continue;
+		}
 
-		// "Push" constants to given shader stage directly (no buffer)
-		vkCmdPushConstants(
-			m_CommandBuffers[currentImage],
-			m_PipelineLayout,
-			VK_SHADER_STAGE_VERTEX_BIT,			// Stage to push constants to
-			0,									// Offset of push constants to update
-			sizeof(Model),						// Size of data being pushed
-			&m_MeshList[j]->getModel()			// Actual data being pushed (can be array)
-		);
+		// Same for textures!
+		if (currentTex >= m_SamplerDescriptorSets.size())
+		{
+			LOGW("Invalid texture ID {} requested for render. Skipping batch.", currentTex);
+			firstInstance += instanceCount;
+			continue;
+		}
+		// -----------------------------
 
-		std::array<VkDescriptorSet, 2> descriptorSetGroup = { m_DescriptorSets[currentImage], m_SamplerDescriptorSets[m_MeshList[j]->getTexId()] };
-
-		// Bind Descriptor Sets
+		// Bind Descriptor Sets for this batch
+		std::array<VkDescriptorSet, 2> descriptorSetGroup = { m_DescriptorSets[currentImage], m_SamplerDescriptorSets[currentTex] };
 		vkCmdBindDescriptorSets(m_CommandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, static_cast<uint32_t>(descriptorSetGroup.size()), descriptorSetGroup.data(), 0, nullptr);
 
-		// Execute pipeline
-		vkCmdDrawIndexed(m_CommandBuffers[currentImage], static_cast<uint32_t>(m_MeshList[j]->getIndexCount()), 1, 0, 0, 0);
+		// Execute Instanced Draw!
+		MeshAsset& asset = m_Meshes[currentMesh];
+		vkCmdDrawIndexed(m_CommandBuffers[currentImage], asset.indexCount, instanceCount, asset.firstIndex, asset.vertexOffset, static_cast<uint32_t>(firstInstance));
+
+		// Advance to next batch
+		firstInstance += instanceCount;
 	}
 
-	// End Render Pass
 	vkCmdEndRenderPass(m_CommandBuffers[currentImage]);
-
-	// Stop recording to command buffer
 	if (vkEndCommandBuffer(m_CommandBuffers[currentImage]) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to stop recording a command buffer" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to stop recording a command buffer");
 	}
 }
 
@@ -1486,9 +1541,7 @@ void Vulkanised::VulkanRenderer::getPhysicalDevice()
 	// If no devices available, then none support Vulkan!
 	if (deviceCount == 0)
 	{
-		constexpr const char* message{ "Can't find GPU's that support Vulkan instance!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("Can't find GPU's that support Vulkan instance!");
 	}
 
 	// Get list of physical devices
@@ -1868,7 +1921,6 @@ VkFormat Vulkanised::VulkanRenderer::chooseSupportedFormat(const std::vector<VkF
 			return format;
 		}
 	}
-
 	constexpr const char* message{ "Failed to find a matching format!" };
 	LOGE(message);
 	throw std::runtime_error(message);
@@ -1897,9 +1949,7 @@ VkImage Vulkanised::VulkanRenderer::createImage(uint32_t width, uint32_t height,
 	VkImage image;
 	if (vkCreateImage(m_MainDevice.logicalDevice, &imageCreateInfo, nullptr, &image) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "Failed to create an Image!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("Failed to create an Image!");
 	}
 
 	// CREATE MEMORY FOR IMAGE
@@ -1916,9 +1966,7 @@ VkImage Vulkanised::VulkanRenderer::createImage(uint32_t width, uint32_t height,
 
 	if (vkAllocateMemory(m_MainDevice.logicalDevice, &memoryAllocInfo, nullptr, imageMemory) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "Failed to allocate memory for image!" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("Failed to allocate memory for image!");
 	}
 
 	// Connect memory to image
@@ -1950,28 +1998,25 @@ VkImageView Vulkanised::VulkanRenderer::createImageView(VkImage image, VkFormat 
 	VkImageView imageView;
 	if (vkCreateImageView(m_MainDevice.logicalDevice, &viewCreateInfo, nullptr, &imageView) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to create an image view" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to create an image view");
 	}
 	return imageView;
 }
 
-VkShaderModule Vulkanised::VulkanRenderer::createShaderModule(const std::vector<char>& code) const
+VkShaderModule Vulkanised::VulkanRenderer::createShaderModule(const std::vector<uint32_t>& code) const
 {
 	// Shader module creation information
 	VkShaderModuleCreateInfo shaderModuleCreateInfo{};
 	shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-	shaderModuleCreateInfo.codeSize = code.size();										// Size of code
-	shaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());		// Pointer to code (of uint32_t pointer type)
+	shaderModuleCreateInfo.codeSize = code.size() * sizeof(uint32_t);										// Size of code
+	//shaderModuleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());		// Pointer to code (of uint32_t pointer type)
+	shaderModuleCreateInfo.pCode = code.data();											// Because why the fuck are we going through the char step bruh
 	
 	VkShaderModule shaderModule;
 
 	if (vkCreateShaderModule(m_MainDevice.logicalDevice, &shaderModuleCreateInfo, nullptr, &shaderModule) != VK_SUCCESS)
 	{
-		constexpr const char* message{ "failed to create a shader module" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("failed to create a shader module");
 	}
 
 	return shaderModule;
