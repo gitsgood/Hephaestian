@@ -23,14 +23,50 @@ static void initWindow(std::string_view wName = "Test Window", const int width =
 
 	if (!rawWindow)
 	{
-		constexpr const char* message{ "Failed to create GLFW window" };
-		LOGE(message);
-		throw std::runtime_error(message);
+		LOGNTHROW("Failed to create GLFW window");
 	}
 
 	// Wrap it in a shared_ptr with a custom deleter
 	// We pass glfwDestroyWindow as the function to call when the ref count hits 0
 	window = std::shared_ptr<GLFWwindow>(rawWindow, glfwDestroyWindow);
+}
+
+auto RandomTransform() -> glm::mat4
+{
+    // Make the engine static so it seeds ONCE on the first call, then persists.
+    // This is thread-safe starting in C++11 for initialization, but NOT for simultaneous execution.
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+
+    // Define distributions for your spatial bounds
+    std::uniform_real_distribution<float> randTranslation(-10.0f, 10.0f);
+    std::uniform_real_distribution<float> randRotation(0.0f, glm::two_pi<float>());
+    std::uniform_real_distribution<float> randScale(0.5f, 2.0f);
+    std::uniform_real_distribution<float> randAxis(-1.0f, 1.0f);
+
+    // 1. Generate random Translation vector
+    glm::vec3 translation{ randTranslation(gen), randTranslation(gen), randTranslation(gen) };
+
+    // 2. Generate a random normalized Rotation axis and an angle
+    glm::vec3 rotationAxis{ randAxis(gen), randAxis(gen), randAxis(gen) };
+    // Handle the rare case of a zero vector to avoid NaN errors during normalization
+    if (glm::length(rotationAxis) < 0.001f) {
+        rotationAxis = glm::vec3{ 0.0f, 1.0f, 0.0f }; 
+    }
+    rotationAxis = glm::normalize(rotationAxis);
+    float rotationAngle = randRotation(gen);
+
+    // 3. Generate random Scale (uniform scaling across all axes to avoid distortion)
+    float scaleFactor = randScale(gen);
+    glm::vec3 scale{ scaleFactor, scaleFactor, scaleFactor };
+
+    // 4. Combine into a single TRS Matrix (Order matters: Translate * Rotate * Scale)
+    glm::mat4 transform = glm::mat4(1.0f);
+    transform = glm::translate(transform, translation);
+    transform = glm::rotate(transform, rotationAngle, rotationAxis);
+    transform = glm::scale(transform, scale);
+
+    return transform;
 }
 
 auto main() -> int
@@ -96,7 +132,7 @@ auto main() -> int
 		packet.push_back({ mesh2, tex2, secondModel });
 
 		// Push 10,000 more instances here with zero Vulkan overhead!
-		// for(int i=0; i<10000; i++) { packet.push_back({ mesh1, tex1, RandomTransform() }); }
+		for(int i=0; i<100; i++) { packet.push_back({ mesh1, tex1, RandomTransform() }); }
 
 		// 3. SUBMIT TO RENDERER
 		renderer.SubmitFrame(packet);
