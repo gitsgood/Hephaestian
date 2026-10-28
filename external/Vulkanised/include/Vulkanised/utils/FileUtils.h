@@ -27,7 +27,7 @@ namespace Vulkanised
 			#elif defined(BUILD_ENV_QTCREATOR)
 				#define PATH "../../"
 			#elif defined(BUILD_ENV_VSCODE)
-				#define PATH "../../" "../"		// When in VsCode, even on Mac, it only has one depth
+				#define PATH "../"		// When in VsCode, even on Mac, it only has one depth
 			#else
 				#define PATH "../../"			// fallback e.g. Mac
 			#endif

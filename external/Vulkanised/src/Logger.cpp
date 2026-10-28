@@ -91,7 +91,7 @@ void Logger::logInternal(const std::string& input, LogType inColor, std::source_
 
     //std::scoped_lock<std::mutex> lock(m_Mutex);   // The mutex locking now happens in the pushToQueue function, no need for another here.
 
-    const char* colorCode = Color::Reset;
+    [[maybe_unused]] const char* colorCode = Color::Reset;
     const char* prefix = " ";
 
     // Building the function name string
@@ -159,7 +159,7 @@ void Vulkanised::Logger::logInternal(const LogEntry& entry) noexcept
 
     //std::scoped_lock<std::mutex> lock(m_Mutex);   // The mutex locking now happens in the pushToQueue function, no need for another here.
 
-    const char* colorCode = Color::Reset;
+    [[maybe_unused]] const char* colorCode = Color::Reset;
     const char* prefix = " ";
 
     // Building the function name string
