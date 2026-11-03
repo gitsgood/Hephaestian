@@ -16,9 +16,8 @@ CMakeUserPresets.json
 # Real shit
 
 # Asset trash
-/Assets
-/Textures
-/src/shaders/
+# (Nothing to ignore anymore: assets are deployed next to the executable inside the build folder, and shaders are
+#  compiled there too. The old /Assets rule is gone on purpose, on Windows it would also have ignored a real assets/ folder.)
 
 # OS junk
 Thumbs.db

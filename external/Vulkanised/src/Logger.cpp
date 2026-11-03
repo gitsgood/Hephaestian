@@ -49,7 +49,7 @@ void Vulkanised::Logger::processQueue()
 
 void Logger::readSettingsFile() noexcept
 {
-    std::filesystem::path settingsPath{ std::filesystem::path(Utilities::File::c_Path) / Utilities::File::c_LogSettingsFileName };
+    std::filesystem::path settingsPath{ Utilities::File::getExecutableDirectory() / Utilities::File::c_LogSettingsFileName };
     std::string jsonBuffer{ "" };
     glz::error_ctx settingsReadFailure = glz::read_file_json(m_LoggerSettings, settingsPath.string(), jsonBuffer);
     if (!settingsReadFailure) { logText(LogType::HIGHLIGHT, std::source_location::current(), "Succesfully read the json..."); }
@@ -63,7 +63,7 @@ void Logger::readSettingsFile() noexcept
 
 void Logger::writeSettingsFile() noexcept
 {
-    std::filesystem::path settingsPath{ std::filesystem::path(Utilities::File::c_Path) / Utilities::File::c_LogSettingsFileName };
+    std::filesystem::path settingsPath{ Utilities::File::getExecutableDirectory() / Utilities::File::c_LogSettingsFileName };
     std::string buffer = glz::write_json(m_LoggerSettings).value_or("error");
     std::ofstream jsonFile;
     jsonFile.open(settingsPath);

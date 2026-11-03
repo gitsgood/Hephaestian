@@ -8,6 +8,7 @@
 #include <atomic>
 #include <set>
 #include <algorithm>
+#include <optional>
 
 #include <stb_image.h>
 #define GLFW_INCLUDE_VULKAN
@@ -40,6 +41,8 @@ public:
 	// Convenience for the (very common) one mesh, one texture model.
 	uint32_t createModelFromSingleMesh(uint32_t MeshIdentifier, uint32_t TextureIdentifier);
 	[[nodiscard]] bool isModelIdentifierValid(uint32_t ModelIdentifier) const noexcept;
+	// loadMesh returns 0 when it fails, which is also a valid identifier: compare this before/after to know if it worked
+	[[nodiscard]] size_t getLoadedMeshCount() const noexcept { return m_Meshes.size(); }
 	[[nodiscard]] const ModelAsset& getModelAsset(uint32_t ModelIdentifier) const;
 
 	// - Camera
@@ -252,7 +255,18 @@ private:
 	int createTextureImage(std::string_view fileName);
 	int createTexture(std::string_view fileName);
 	int createTextureDescriptor(VkImageView textureImage);
+
+	// - Textures that don't come from a file in assets/Textures (model importers need these)
+	// Raw 8-bit RGBA pixels, WidthInPixels * HeightInPixels * 4 bytes. Returns the texture identifier.
+	int createTextureFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels);
+	// A whole PNG/JPG/... file that's already in memory (e.g. embedded in a .glb). Falls back to white if it can't be decoded.
+	int createTextureFromEncodedImageInMemory(const unsigned char* EncodedImageBytes, size_t EncodedImageByteCount);
+	// 1x1 white texture, for materials with no texture (the shader multiplies it by the vertex colour). Created on first use.
+	[[nodiscard]] uint32_t getDefaultWhiteTextureIdentifier();
 	private:
+	int createTextureImageFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels);
+	int createTextureViewAndDescriptorForImage(int TextureImageIndex);
+	std::optional<uint32_t> m_DefaultWhiteTextureIdentifier;
 	// -- Loader Functions
 	stbi_uc* loadTextureFile(std::string_view fileName, int* width, int* height, VkDeviceSize* imageSize);
 };

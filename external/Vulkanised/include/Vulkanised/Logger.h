@@ -141,11 +141,11 @@ private:
         readSettingsFile();
         if (!m_LoggerSettings.deleteLogFileAtStart)
         {
-            m_File.open(std::filesystem::path(Utilities::File::c_Path) / Utilities::File::c_LogFileName, std::ios::app);
+            m_File.open(Utilities::File::getExecutableDirectory() / Utilities::File::c_LogFileName, std::ios::app);
         }
         else
         {
-            m_File.open(std::filesystem::path(Utilities::File::c_Path) / Utilities::File::c_LogFileName);
+            m_File.open(Utilities::File::getExecutableDirectory() / Utilities::File::c_LogFileName);
         }
 
         // ACTUALLY start the damn thread lmao 

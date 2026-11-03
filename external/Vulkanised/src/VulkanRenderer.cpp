@@ -887,8 +887,8 @@ void Vulkanised::VulkanRenderer::createDescriptorSetLayout()
 void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 {
 	// Read in SPIR-V code of shaders
-	auto vertexShaderCode = Utilities::File::readFile("src/shaders/bin/shader.vert.spv");
-	auto fragmentShaderCode = Utilities::File::readFile("src/shaders/bin/shader.frag.spv");
+	auto vertexShaderCode = Utilities::File::readFile(Utilities::File::getRuntimeAssetsDirectory() / Utilities::File::c_ShadersFolderName / "shader.vert.spv");
+	auto fragmentShaderCode = Utilities::File::readFile(Utilities::File::getRuntimeAssetsDirectory() / Utilities::File::c_ShadersFolderName / "shader.frag.spv");
 
 	// Create Shader Modules to link to Graphics Pipeline
 	VkShaderModule vertexShaderModule = createShaderModule(vertexShaderCode);
@@ -1306,11 +1306,11 @@ void Vulkanised::VulkanRenderer::createDescriptorPool()
 	// Texture sampler pool
 	VkDescriptorPoolSize samplerPoolSize = {};
 	samplerPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	samplerPoolSize.descriptorCount = Utilities::Vulkan::c_MaxObjects;
+	samplerPoolSize.descriptorCount = Utilities::Vulkan::c_MaxTextures;
 
 	VkDescriptorPoolCreateInfo samplerPoolCreateInfo = {};
 	samplerPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	samplerPoolCreateInfo.maxSets = Utilities::Vulkan::c_MaxObjects;
+	samplerPoolCreateInfo.maxSets = Utilities::Vulkan::c_MaxTextures;
 	samplerPoolCreateInfo.poolSizeCount = 1;
 	samplerPoolCreateInfo.pPoolSizes = &samplerPoolSize;
 
@@ -2147,6 +2147,21 @@ int Vulkanised::VulkanRenderer::createTextureImage(std::string_view fileName)
 	VkDeviceSize imageSize;
 	stbi_uc* imageData = loadTextureFile(fileName, &width, &height, &imageSize);
 
+	const int CreatedTextureImageIndex = createTextureImageFromRgbaPixels(imageData, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+
+	// Free original image data
+	stbi_image_free(imageData);
+
+	return CreatedTextureImageIndex;
+}
+
+int Vulkanised::VulkanRenderer::createTextureImageFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels)
+{
+	const uint32_t width{ WidthInPixels };
+	const uint32_t height{ HeightInPixels };
+	const VkDeviceSize imageSize{ static_cast<VkDeviceSize>(WidthInPixels) * HeightInPixels * 4 };
+	const unsigned char* imageData{ RgbaPixels };
+
 	// Create staging buffer to hold loaded data, ready to copy to device
 	VkBuffer imageStagingBuffer;
 	VkDeviceMemory imageStagingBufferMemory;
@@ -2165,9 +2180,6 @@ int Vulkanised::VulkanRenderer::createTextureImage(std::string_view fileName)
 	vkMapMemory(m_MainDevice.logicalDevice, imageStagingBufferMemory, 0, imageSize, 0, &data);
 	memcpy(data, imageData, static_cast<size_t>(imageSize));
 	vkUnmapMemory(m_MainDevice.logicalDevice, imageStagingBufferMemory);
-
-	// Free original image data
-	stbi_image_free(imageData);
 
 	// Create image to hold final texture
 	VkImage texImage;
@@ -2203,17 +2215,62 @@ int Vulkanised::VulkanRenderer::createTextureImage(std::string_view fileName)
 int Vulkanised::VulkanRenderer::createTexture(std::string_view fileName)
 {
 	// Create Texture Image and get its location in array
-	int textureImageLoc = createTextureImage(fileName);
+	return createTextureViewAndDescriptorForImage(createTextureImage(fileName));
+}
 
+int Vulkanised::VulkanRenderer::createTextureFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels)
+{
+	if (RgbaPixels == nullptr || WidthInPixels == 0 || HeightInPixels == 0)
+	{
+		LOGW("Tried to create a texture from no pixels, using the default white texture instead.");
+		return static_cast<int>(getDefaultWhiteTextureIdentifier());
+	}
+	return createTextureViewAndDescriptorForImage(createTextureImageFromRgbaPixels(RgbaPixels, WidthInPixels, HeightInPixels));
+}
+
+int Vulkanised::VulkanRenderer::createTextureFromEncodedImageInMemory(const unsigned char* EncodedImageBytes, size_t EncodedImageByteCount)
+{
+	// stb_image takes an int for the size, so anything above 2GB can't be decoded in one go (and shouldn't be a texture anyway)
+	if (EncodedImageBytes == nullptr || EncodedImageByteCount == 0 || EncodedImageByteCount > static_cast<size_t>(std::numeric_limits<int>::max()))
+	{
+		LOGW("Tried to decode an empty (or absurdly big) in-memory image, using the default white texture instead.");
+		return static_cast<int>(getDefaultWhiteTextureIdentifier());
+	}
+
+	int DecodedWidthInPixels{ 0 };
+	int DecodedHeightInPixels{ 0 };
+	int ChannelCountInSourceImage{ 0 };
+	stbi_uc* DecodedRgbaPixels = stbi_load_from_memory(EncodedImageBytes, static_cast<int>(EncodedImageByteCount), &DecodedWidthInPixels, &DecodedHeightInPixels, &ChannelCountInSourceImage, STBI_rgb_alpha);
+	if (DecodedRgbaPixels == nullptr)
+	{
+		LOGW("Failed to decode an in-memory image ({}), using the default white texture instead.", stbi_failure_reason());
+		return static_cast<int>(getDefaultWhiteTextureIdentifier());
+	}
+
+	const int CreatedTextureIdentifier = createTextureFromRgbaPixels(DecodedRgbaPixels, static_cast<uint32_t>(DecodedWidthInPixels), static_cast<uint32_t>(DecodedHeightInPixels));
+	stbi_image_free(DecodedRgbaPixels);
+	return CreatedTextureIdentifier;
+}
+
+uint32_t Vulkanised::VulkanRenderer::getDefaultWhiteTextureIdentifier()
+{
+	// Created on first use, so code that never needs it doesn't see its texture identifiers shift by one
+	if (!m_DefaultWhiteTextureIdentifier.has_value())
+	{
+		constexpr std::array<unsigned char, 4> c_SingleWhitePixel{ 255, 255, 255, 255 };
+		m_DefaultWhiteTextureIdentifier = static_cast<uint32_t>(createTextureViewAndDescriptorForImage(createTextureImageFromRgbaPixels(c_SingleWhitePixel.data(), 1, 1)));
+	}
+	return m_DefaultWhiteTextureIdentifier.value();
+}
+
+int Vulkanised::VulkanRenderer::createTextureViewAndDescriptorForImage(int TextureImageIndex)
+{
 	// Create Image View and add to list
-	VkImageView imageView = createImageView(m_TextureImages[textureImageLoc], VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+	VkImageView imageView = createImageView(m_TextureImages[TextureImageIndex], VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
 	m_TextureImageViews.push_back(imageView);
 
-	// Create Texture Descriptor
-	int descriptorLoc = createTextureDescriptor(imageView);
-
-	// Return location of set with texture
-	return descriptorLoc;
+	// Create Texture Descriptor, and return location of set with texture
+	return createTextureDescriptor(imageView);
 }
 
 int Vulkanised::VulkanRenderer::createTextureDescriptor(VkImageView textureImage)
@@ -2226,6 +2283,11 @@ int Vulkanised::VulkanRenderer::createTextureDescriptor(VkImageView textureImage
 	setAllocInfo.descriptorPool = m_SamplerDescriptorPool;
 	setAllocInfo.descriptorSetCount = 1;
 	setAllocInfo.pSetLayouts = &m_SamplerSetLayout;
+
+	if (m_SamplerDescriptorSets.size() >= Utilities::Vulkan::c_MaxTextures)
+	{
+		LOGNTHROW("Out of texture slots ({} max). Raise Utilities::Vulkan::c_MaxTextures if this is legit.", Utilities::Vulkan::c_MaxTextures);
+	}
 
 	// Allocate Descriptor Sets
 	VkResult result = vkAllocateDescriptorSets(m_MainDevice.logicalDevice, &setAllocInfo, &descriptorSet);
@@ -2266,7 +2328,10 @@ stbi_uc* Vulkanised::VulkanRenderer::loadTextureFile(std::string_view fileName, 
 	int channels;
 
 	// Load pixel data for image
-	std::filesystem::path fileLoc{ std::filesystem::path(Utilities::File::c_Path) / "Textures" / fileName };
+	// Relative names ("bibi.jpg") live in assets/Textures. Absolute paths are used as-is, which is what model importers
+	// will need, since a model's textures usually sit next to the model file rather than in the Textures folder.
+	const std::filesystem::path RequestedTexturePath{ fileName };
+	std::filesystem::path fileLoc{ RequestedTexturePath.is_absolute() ? RequestedTexturePath : Utilities::File::getRuntimeAssetsDirectory() / Utilities::File::c_TexturesFolderName / RequestedTexturePath };
 	std::string pathString = fileLoc.string();
 
 	LOG("Loading texture: {}", pathString);

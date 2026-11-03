@@ -25,24 +25,14 @@ if(NOT MSVC)
     find_package(glm REQUIRED)
 endif()
 
-# Detect build environment based on CMAKE_BINARY_DIR
-# Used to set correct PATH and some clean up
-if(${CMAKE_BINARY_DIR} MATCHES ".*out/.*")
-    add_compile_definitions(BUILD_ENV_VISUAL_STUDIO)
-    message(STATUS "=== Visual Studio detected ===")
-elseif($ENV{VSCODE_CMAKE_TOOLS}) # Extension should be detectable like that
-    add_compile_definitions(BUILD_ENV_VSCODE)
-    message(STATUS "=== VS Code detected ===")
-elseif(${CMAKE_BINARY_DIR} MATCHES ".*build/.*")
-    add_compile_definitions(BUILD_ENV_QTCREATOR)
-    message(STATUS "=== Qt Creator detected ===")
-endif()
+# (The old BUILD_ENV_* IDE detection is gone: runtime files are now found relative to the executable itself,
+#  see Utilities::File::getExecutableDirectory, so it no longer matters which IDE or build folder we're in.)
 
 # Set source files...
 set(SOURCES
     src/main.cpp
     include/Vulkanised/Utilities.h
-    include/Vulkanised/utils/VulkanUtils.h include/Vulkanised/utils/TimeUtils.h   include/Vulkanised/utils/FileUtils.h   include/Vulkanised/utils/CrossPlatUtils.h
+    include/Vulkanised/utils/VulkanUtils.h include/Vulkanised/utils/TimeUtils.h   include/Vulkanised/utils/FileUtils.h   src/utils/FileUtils.cpp   include/Vulkanised/utils/CrossPlatUtils.h
     include/Vulkanised/Logger.h            src/Logger.cpp
     include/Vulkanised/VulkanRenderer.h    src/VulkanRenderer.cpp
     include/Vulkanised/Vertex.h
@@ -113,11 +103,14 @@ endif()
 
 target_link_libraries(${PROJECT_NAME} PUBLIC ${LIB_LIST})
 
-# Define the directories
-set(SHADER_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders")
-set(SHADER_BIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/bin")
-# Ensure the output directory exists
-file(MAKE_DIRECTORY ${SHADER_BIN_DIR})
+# ---------------------------------------------------------------------------------------------------------------------
+# SHADERS
+# Everything generated goes into the BUILD tree, never the source tree. That way a clean build is truly clean, nothing
+# generated can end up committed by accident, and Debug/Release (or two different IDEs) can't step on each other's files.
+# ---------------------------------------------------------------------------------------------------------------------
+set(VULKANISED_COMPILED_SHADER_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/shaders")     # .spv files, deployed next to executables
+set(VULKANISED_GENERATED_HEADER_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")  # embedded_*.h files, baked into Release builds
+file(MAKE_DIRECTORY "${VULKANISED_COMPILED_SHADER_DIRECTORY}" "${VULKANISED_GENERATED_HEADER_DIRECTORY}/shaders")
 
 set(SPV_OUTPUTS "")
 set(GENERATED_HEADERS "")
@@ -126,15 +119,16 @@ set(GENERATED_HEADERS "")
 foreach(SHADER ${SHADER_FILES})
     # Extract just the filename (e.g., "shader.vert")
     get_filename_component(FILE_NAME ${SHADER} NAME)
-    
+
     # --- Part A: SPIR-V Compilation (.spv) ---
-    set(OUTPUT_SPV "${SHADER_BIN_DIR}/${FILE_NAME}.spv")
-    
+    set(OUTPUT_SPV "${VULKANISED_COMPILED_SHADER_DIRECTORY}/${FILE_NAME}.spv")
+
     add_custom_command(
         OUTPUT ${OUTPUT_SPV}
-        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${SHADER}" -o ${OUTPUT_SPV}
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${SHADER}" -o "${OUTPUT_SPV}"
         DEPENDS ${SHADER}
         COMMENT "Compiling ${FILE_NAME} to SPIR-V"
+        VERBATIM
     )
     list(APPEND SPV_OUTPUTS ${OUTPUT_SPV})
 
@@ -142,26 +136,96 @@ foreach(SHADER ${SHADER_FILES})
     # Create a safe header name: "shader.vert" -> "embedded_shader_vert.h"
     string(REPLACE "." "_" SAFE_NAME ${FILE_NAME})
     set(HEADER_NAME "embedded_${SAFE_NAME}.h")
-    set(HEADER_PATH "${SHADER_SRC_DIR}/${HEADER_NAME}")
-    
+    set(HEADER_PATH "${VULKANISED_GENERATED_HEADER_DIRECTORY}/shaders/${HEADER_NAME}")
+
     add_custom_command(
         OUTPUT ${HEADER_PATH}
-        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${SHADER}" -mfmt=c -o ${HEADER_PATH}
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${SHADER}" -mfmt=c -o "${HEADER_PATH}"
         DEPENDS ${SHADER}
         COMMENT "Generating embedded header ${HEADER_NAME}"
+        VERBATIM
     )
     list(APPEND GENERATED_HEADERS ${HEADER_PATH})
 endforeach()
 
-# Create a single target to trigger all shader work
-add_custom_target(CompileShaders DEPENDS ${SPV_OUTPUTS} ${GENERATED_HEADERS})
-add_dependencies(${PROJECT_NAME} CompileShaders)
+# Create a single target to trigger all shader work (prefixed, so it can't clash with a "CompileShaders" in a parent project)
+add_custom_target(VulkanisedCompileShaders DEPENDS ${SPV_OUTPUTS} ${GENERATED_HEADERS})
+add_dependencies(${PROJECT_NAME} VulkanisedCompileShaders)
 
-# Tell the executable about the generated headers
+# Tell the library about the generated headers
 target_sources(${PROJECT_NAME} PRIVATE ${GENERATED_HEADERS})
 
-# Make sure your target depends on this generated file
-target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+# PUBLIC, because utils/FileUtils.h (a public header) includes "shaders/embedded_shader_*.h" in Release builds,
+# so anything that includes Vulkanised headers needs to find them too
+target_include_directories(${PROJECT_NAME} PUBLIC $<BUILD_INTERFACE:${VULKANISED_GENERATED_HEADER_DIRECTORY}>)
 
-# This tells anyone who includes this directory where the assets are
-set(VULKANISED_ASSETS_PATH "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "Path to Vulkanised assets")
+# ---------------------------------------------------------------------------------------------------------------------
+# RUNTIME ASSET DEPLOYMENT
+# At runtime, Vulkanised looks for everything in "<folder of the executable>/assets" (see Utilities::File).
+# Any executable using Vulkanised calls vulkanised_deploy_runtime_assets() once, and the build keeps that folder up to date.
+# ---------------------------------------------------------------------------------------------------------------------
+set(VULKANISED_RUNTIME_ASSETS_FOLDER_NAME "assets" CACHE INTERNAL "Folder next to the executable that holds every runtime asset (must match Utilities::File::c_RuntimeAssetsFolderName)")
+set(VULKANISED_SOURCE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "Vulkanised's source directory, e.g. for its test Textures folder")
+set_property(GLOBAL PROPERTY VULKANISED_COMPILED_SHADER_FILES ${SPV_OUTPUTS})
+
+# Kept so anything still using the old name doesn't silently get an empty path
+set(VULKANISED_ASSETS_PATH "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "Deprecated, use VULKANISED_SOURCE_DIRECTORY")
+
+# vulkanised_deploy_runtime_assets(<executable target>
+#     [ASSET_DIRECTORIES <dir>...]           # each folder is copied to assets/<folder name>/ (e.g. .../Textures -> assets/Textures)
+#     [FILES_NEXT_TO_EXECUTABLE <file>...]   # loose files copied right beside the executable (e.g. the logger settings)
+# )
+# Vulkanised's compiled shaders are always deployed to assets/shaders/.
+# Files are only copied when they changed, and the step re-runs whenever any of them is edited. Adding or removing
+# files is picked up automatically too (CONFIGURE_DEPENDS), but deleted files are not removed from the deployed folder.
+function(vulkanised_deploy_runtime_assets TARGET_NAME)
+    cmake_parse_arguments(PARSE_ARGV 1 DEPLOY "" "" "ASSET_DIRECTORIES;FILES_NEXT_TO_EXECUTABLE")
+
+    set(EXECUTABLE_DIRECTORY "$<TARGET_FILE_DIR:${TARGET_NAME}>")
+    set(ASSETS_DESTINATION "${EXECUTABLE_DIRECTORY}/${VULKANISED_RUNTIME_ASSETS_FOLDER_NAME}")
+    set(DEPLOY_COMMANDS "")
+    set(DEPLOY_DEPENDENCIES "")
+
+    # 1. Vulkanised's own compiled shaders
+    get_property(COMPILED_SHADER_FILES GLOBAL PROPERTY VULKANISED_COMPILED_SHADER_FILES)
+    list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E make_directory "${ASSETS_DESTINATION}/shaders")
+    list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${COMPILED_SHADER_FILES} "${ASSETS_DESTINATION}/shaders")
+    list(APPEND DEPLOY_DEPENDENCIES ${COMPILED_SHADER_FILES})
+
+    # 2. Whole asset folders
+    foreach(ASSET_DIRECTORY ${DEPLOY_ASSET_DIRECTORIES})
+        get_filename_component(ABSOLUTE_ASSET_DIRECTORY "${ASSET_DIRECTORY}" ABSOLUTE)
+        if(NOT IS_DIRECTORY "${ABSOLUTE_ASSET_DIRECTORY}")
+            message(FATAL_ERROR "vulkanised_deploy_runtime_assets: asset directory '${ABSOLUTE_ASSET_DIRECTORY}' does not exist")
+        endif()
+        get_filename_component(ASSET_FOLDER_NAME "${ABSOLUTE_ASSET_DIRECTORY}" NAME)
+
+        file(GLOB_RECURSE ASSET_FILES CONFIGURE_DEPENDS "${ABSOLUTE_ASSET_DIRECTORY}/*")
+        list(APPEND DEPLOY_DEPENDENCIES ${ASSET_FILES})
+        list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different "${ABSOLUTE_ASSET_DIRECTORY}" "${ASSETS_DESTINATION}/${ASSET_FOLDER_NAME}")
+    endforeach()
+
+    # 3. Loose files beside the executable
+    foreach(LOOSE_FILE ${DEPLOY_FILES_NEXT_TO_EXECUTABLE})
+        get_filename_component(ABSOLUTE_LOOSE_FILE "${LOOSE_FILE}" ABSOLUTE)
+        list(APPEND DEPLOY_DEPENDENCIES "${ABSOLUTE_LOOSE_FILE}")
+        list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${ABSOLUTE_LOOSE_FILE}" "${EXECUTABLE_DIRECTORY}")
+    endforeach()
+
+    # The stamp file is what makes this incremental: it's only rebuilt (= everything re-synced) when a dependency is newer
+    set(DEPLOY_STAMP_FILE "${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}_runtime_assets_$<CONFIG>.stamp")
+    add_custom_command(
+        OUTPUT "${DEPLOY_STAMP_FILE}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${ASSETS_DESTINATION}"
+        ${DEPLOY_COMMANDS}
+        COMMAND "${CMAKE_COMMAND}" -E touch "${DEPLOY_STAMP_FILE}"
+        DEPENDS ${DEPLOY_DEPENDENCIES}
+        COMMENT "Deploying runtime assets for ${TARGET_NAME}..."
+        VERBATIM
+    )
+    add_custom_target(${TARGET_NAME}DeployRuntimeAssets DEPENDS "${DEPLOY_STAMP_FILE}")
+
+    # Shaders have to exist before they can be copied (this was the race in the old copy step)
+    add_dependencies(${TARGET_NAME}DeployRuntimeAssets VulkanisedCompileShaders)
+    add_dependencies(${TARGET_NAME} ${TARGET_NAME}DeployRuntimeAssets)
+endfunction()

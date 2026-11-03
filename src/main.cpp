@@ -1,6 +1,7 @@
 #include <Vulkanised/Logger.h>
 #include <Vulkanised/VulkanRenderer.h>
 
+#include "Hephaestian/Assets/ModelImporter.h"
 #include "Hephaestian/Input/InputManager.h"
 #include "Hephaestian/ECS/Scene.h"
 #include "Hephaestian/ECS/Components.h"
@@ -159,6 +160,52 @@ auto main() -> int
 	TotemCameraTransform.m_LocalRotation = glm::angleAxis(glm::radians(-15.0f), glm::vec3(1.0f, 0.0f, 0.0f));
 	Registry.emplace<Components::CameraComponent>(TotemCameraEntity, 75.0f);
 	GameScene.attachEntityToParent(TotemCameraEntity, TotemEntity);
+
+	// IMPORTED MODELS: everything in assets/Models gets loaded and lined up in front of the player, slowly turning
+	Assets::ModelImporter ModelFileImporter(renderer);
+	{
+		const std::filesystem::path ModelsDirectory = Vulkanised::Utilities::File::getRuntimeAssetsDirectory() / "Models";
+		std::vector<std::filesystem::path> ModelFilePathsToImport;
+		std::error_code DirectoryIterationError;
+		for (const std::filesystem::directory_entry& CurrentDirectoryEntry : std::filesystem::directory_iterator(ModelsDirectory, DirectoryIterationError))
+		{
+			if (CurrentDirectoryEntry.is_regular_file() && Assets::ModelImporter::isModelFileExtensionSupported(CurrentDirectoryEntry.path()))
+			{
+				ModelFilePathsToImport.push_back(CurrentDirectoryEntry.path());
+			}
+		}
+		std::ranges::sort(ModelFilePathsToImport);	// Directory order isn't guaranteed, keep the line-up stable between runs
+
+		constexpr float c_ImportedModelDisplaySizeInUnits{ 1.5f };	// Every model is scaled so its biggest side is this long
+		constexpr float c_SpacingBetweenImportedModelsInUnits{ 2.5f };
+		const float LineUpStartPositionX = -0.5f * c_SpacingBetweenImportedModelsInUnits * static_cast<float>(ModelFilePathsToImport.empty() ? 0 : ModelFilePathsToImport.size() - 1);
+
+		for (size_t CurrentModelFileIndex{ 0 }; CurrentModelFileIndex < ModelFilePathsToImport.size(); ++CurrentModelFileIndex)
+		{
+			const std::optional<Assets::ImportedModel> ImportedModelResult = ModelFileImporter.importModelFromFile(ModelFilePathsToImport[CurrentModelFileIndex]);
+			if (!ImportedModelResult.has_value())
+			{
+				continue;
+			}
+
+			const glm::vec3 ModelBoundsSize = ImportedModelResult->calculateBoundsSize();
+			const float LargestModelSide = glm::max(ModelBoundsSize.x, glm::max(ModelBoundsSize.y, ModelBoundsSize.z));
+			const float ModelDisplayScale = LargestModelSide > 1e-6f ? c_ImportedModelDisplaySizeInUnits / LargestModelSide : 1.0f;
+
+			// A pivot that spins in place, with the model as its child offset so the model's centre sits on the pivot
+			const std::string ModelFileName = ModelFilePathsToImport[CurrentModelFileIndex].filename().string();
+			const entt::entity ModelPivotEntity = GameScene.createEntity(ModelFileName + " Pivot");
+			Registry.get<Components::TransformComponent>(ModelPivotEntity).m_LocalPosition = { LineUpStartPositionX + c_SpacingBetweenImportedModelsInUnits * static_cast<float>(CurrentModelFileIndex), 0.0f, 0.0f };
+			Registry.emplace<Components::ConstantRotationComponent>(ModelPivotEntity, glm::vec3(0.0f, 1.0f, 0.0f), 20.0f);
+
+			const entt::entity ImportedModelEntity = GameScene.createEntity(ModelFileName);
+			auto& ImportedModelTransform = Registry.get<Components::TransformComponent>(ImportedModelEntity);
+			ImportedModelTransform.m_LocalScale = glm::vec3(ModelDisplayScale);
+			ImportedModelTransform.m_LocalPosition = -ImportedModelResult->calculateBoundsCentre() * ModelDisplayScale;
+			Registry.emplace<Components::ModelRendererComponent>(ImportedModelEntity, ImportedModelResult->m_ModelIdentifier);
+			GameScene.attachEntityToParent(ImportedModelEntity, ModelPivotEntity);
+		}
+	}
 
 	GameScene.setActiveCameraEntity(PlayerCameraEntity);
 

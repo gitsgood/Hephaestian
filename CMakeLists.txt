@@ -14,18 +14,19 @@ add_subdirectory(external/Vulkanised)
 # EnTT, the ECS. Header only, vendored like stb_image
 add_subdirectory(external/entt)
 
-# Detect build environment based on CMAKE_BINARY_DIR
-# Used to set correct PATH and some clean up
-if(${CMAKE_BINARY_DIR} MATCHES ".*out/.*")
-    add_compile_definitions(BUILD_ENV_VISUAL_STUDIO)
-    message(STATUS "=== Visual Studio detected ===")
-elseif($ENV{VSCODE_CMAKE_TOOLS}) # Extension should be detectable like that
-    add_compile_definitions(BUILD_ENV_VSCODE)
-    message(STATUS "=== VS Code detected ===")
-elseif(${CMAKE_BINARY_DIR} MATCHES ".*build/.*")
-    add_compile_definitions(BUILD_ENV_QTCREATOR)
-    message(STATUS "=== Qt Creator detected ===")
-endif()
+# MODEL IMPORTING
+# - ufbx: .obj (+ .mtl) and .fbx
+add_subdirectory(external/ufbx)
+# - fastgltf: .gltf and .glb. It needs simdjson + simdutf, which we vendor ourselves instead of letting it download them
+add_subdirectory(external/simdjson)
+add_subdirectory(external/simdutf)
+set(FASTGLTF_DOWNLOAD_SIMDJSON OFF CACHE BOOL "" FORCE)
+set(FASTGLTF_DOWNLOAD_SIMDUTF OFF CACHE BOOL "" FORCE)
+set(FASTGLTF_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(FASTGLTF_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(FASTGLTF_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(FASTGLTF_ENABLE_DOCS OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/fastgltf SYSTEM)  # SYSTEM: its headers can't trip our warnings-as-errors
 
 # Set source files...
 set(SOURCES
@@ -37,24 +38,23 @@ set(SOURCES
     include/Hephaestian/ECS/Systems/MovementSystems.h           src/ECS/Systems/MovementSystems.cpp
     include/Hephaestian/ECS/Systems/CameraSystem.h              src/ECS/Systems/CameraSystem.cpp
     include/Hephaestian/ECS/Systems/RenderSystem.h              src/ECS/Systems/RenderSystem.cpp
+    include/Hephaestian/Assets/ModelImporter.h                  src/Assets/ModelImporter.cpp
 )
 
 # Define your executable using the SOURCES variable
 add_executable(${PROJECT_NAME} ${SOURCES})
 
-# ABSOLUTE WORKAROUND
-# TODO: MAKE THIS BETTER FFS
-
-# 1. Create a dedicated target for copying assets
-add_custom_target(CopyVulkanAssets
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${VULKANISED_ASSETS_PATH}/Textures" "${CMAKE_CURRENT_SOURCE_DIR}/Textures"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory "${VULKANISED_ASSETS_PATH}/src/shaders" "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"
-    COMMENT "Copying Vulkanised assets to output directory..."
+# RUNTIME ASSETS (the workaround is dead, long live the workaround)
+# Everything the game needs at runtime is copied to "<exe folder>/assets", and only when something actually changed.
+# Shaders always come along. Add more folders to ASSET_DIRECTORIES as the game gets its own assets (e.g. assets/Models).
+vulkanised_deploy_runtime_assets(${PROJECT_NAME}
+    ASSET_DIRECTORIES
+        "${VULKANISED_SOURCE_DIRECTORY}/Textures"           # -> assets/Textures
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/Models"         # -> assets/Models (every model in here gets loaded at startup)
+    FILES_NEXT_TO_EXECUTABLE
+        "${CMAKE_CURRENT_SOURCE_DIR}/VulkanisedLoggerSettings.json"
 )
-
-# 2. Tell your game to depend on this target
-# This means: "Before you build the game, you MUST run CopyVulkanAssets"
-add_dependencies(${PROJECT_NAME} CopyVulkanAssets)
+# (Paths are resolved from the exe's own location, so the working directory you launch from no longer matters.)
 
 # PRECOMPILE HEADER WOO
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/pch.h)
@@ -93,6 +93,8 @@ endif()
 set(LIB_LIST
     Vulkanised # This include everything it includes for itself, so: glaze, vulkan, glm, stb_image and glfw (not that it should need to...)
     EnTT::EnTT # The ECS
+    fastgltf::fastgltf # glTF/GLB importing
+    ufbx::ufbx # OBJ/FBX importing
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE ${LIB_LIST})

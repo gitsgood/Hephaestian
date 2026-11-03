@@ -1,10 +1,13 @@
 #ifndef FILEUTILS_H
 #define FILEUTILS_H
 
+#include <cstdint>
 #include <fstream>
 #include <filesystem>
+#include <string>
+#include <vector>
 
-// If we are in release mode, use the CMake generated headers
+// If we are in release mode, use the CMake generated headers (generated into the build folder, see CMakeLists.txt)
 #ifdef NDEBUG
 	inline constexpr uint32_t embedded_shader_vert[] =
 	#include "shaders/embedded_shader_vert.h"
@@ -21,66 +24,74 @@ namespace Vulkanised
 	{
 		namespace File
 		{
-			// Path constants. The definitions are set up in the CMakeLists file. It's where the logic on how the compiler knows lies.
-			#if defined(BUILD_ENV_VISUAL_STUDIO)
-				#define PATH "../../../"
-			#elif defined(BUILD_ENV_QTCREATOR)
-				#define PATH "../../"
-			#elif defined(BUILD_ENV_VSCODE)
-				#define PATH "../"		// When in VsCode, even on Mac, it only has one depth
-			#else
-				#define PATH "../../"			// fallback e.g. Mac
-			#endif
+			// RUNTIME LAYOUT (kept up to date by vulkanised_deploy_runtime_assets in CMake):
+			//	<executable folder>/
+			//		Hephaestian.exe
+			//		VulkanisedLoggerSettings.json
+			//		VulkanisedLog.log
+			//		assets/
+			//			shaders/	(compiled .spv)
+			//			Textures/
+			//			...			(whatever else the game deploys)
+			//
+			// Everything is found relative to the EXECUTABLE, never to the working directory. The old way (guessing "../../../"
+			// from which IDE built us) broke as soon as the exe was launched from anywhere else.
 
-			inline constexpr const char* c_Path{ PATH };
+			inline constexpr const char* c_RuntimeAssetsFolderName{ "assets" };		// Must match VULKANISED_RUNTIME_ASSETS_FOLDER_NAME in CMake
+			inline constexpr const char* c_ShadersFolderName{ "shaders" };
+			inline constexpr const char* c_TexturesFolderName{ "Textures" };
+
 			inline constexpr const char* c_LogSettingsFileName{ "VulkanisedLoggerSettings.json" };
 			inline constexpr const char* c_LogFileName{ "VulkanisedLog.log" };
 			inline constexpr const char* c_LogSeparation{ "\n------------------------------------------------------------\n\n" };
 
-			// Returns a file buffer. 
-			// fileName will automatically be prefixed with c_Path
-			[[nodiscard]] inline std::vector<uint32_t> readFile(std::string_view fileName)
+			// Absolute folder the running executable lives in. Asked to the OS once, then cached.
+			[[nodiscard]] const std::filesystem::path& getExecutableDirectory() noexcept;
+
+			// <executable folder>/assets
+			[[nodiscard]] const std::filesystem::path& getRuntimeAssetsDirectory() noexcept;
+
+			// Returns a file buffer, read from the given path (use getRuntimeAssetsDirectory() to build it).
+			// In Release, the shaders come from the embedded headers instead of the disk.
+			[[nodiscard]] inline std::vector<uint32_t> readFile(const std::filesystem::path& FilePath)
 			{
 				#ifdef NDEBUG
-					if (fileName.contains("vert"))
+					const std::string FileNameOnly{ FilePath.filename().string() };
+					if (FileNameOnly.contains("vert"))
 					{
 						return std::vector<uint32_t>(std::begin(embedded_shader_vert), std::end(embedded_shader_vert));
 					}
-					else if (fileName.contains("frag"))
+					else if (FileNameOnly.contains("frag"))
 					{
 						return std::vector<uint32_t>(std::begin(embedded_shader_frag), std::end(embedded_shader_frag));
 					}
 				#endif
 
-				auto fileBuffer = [fileName](std::filesystem::path inFilePath) -> std::vector<uint32_t> {
-					// Open stream from given file
-					// std::ios::binary tells stream to read file as binary
-					// std::ios::ate tells stream to start reading from end of file
-					std::ifstream file(inFilePath, std::ios::binary | std::ios::ate);
+				// Open stream from given file
+				// std::ios::binary tells stream to read file as binary
+				// std::ios::ate tells stream to start reading from end of file
+				std::ifstream file(FilePath, std::ios::binary | std::ios::ate);
 
-					// Check if file stream succesfully opened
-					if (!file.is_open())
-					{
-						throw std::runtime_error("Failed to open shader file: " + std::string(fileName) + "\nAttempted path: " + std::filesystem::absolute(inFilePath).string());
-					}
+				// Check if file stream succesfully opened
+				if (!file.is_open())
+				{
+					throw std::runtime_error("Failed to open file: " + FilePath.filename().string() + "\nAttempted path: " + std::filesystem::absolute(FilePath).string());
+				}
 
-					// Get current read position and use to resize file buffer
-					size_t fileSize = (size_t)file.tellg();
-					std::vector<uint32_t> buffer(fileSize / sizeof(uint32_t));
+				// Get current read position and use to resize file buffer
+				size_t fileSize = (size_t)file.tellg();
+				std::vector<uint32_t> buffer(fileSize / sizeof(uint32_t));
 
-					// Move read position (seek to) the start of the file
-					file.seekg(0);
+				// Move read position (seek to) the start of the file
+				file.seekg(0);
 
-					// Read the file data into the buffer (stream "fileSize" in total)
-					file.read(reinterpret_cast<char*>(buffer.data()), fileSize);
+				// Read the file data into the buffer (stream "fileSize" in total)
+				file.read(reinterpret_cast<char*>(buffer.data()), fileSize);
 
-					// Close the stream
-					file.close();
+				// Close the stream
+				file.close();
 
-					return buffer;
-					};
-
-				return std::vector<uint32_t>(fileBuffer(std::filesystem::path{ std::filesystem::path(c_Path) / fileName }));
+				return buffer;
 			}
 		}
 	}
