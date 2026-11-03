@@ -29,6 +29,31 @@ namespace Vulkanised
         glm::mat4 transform;
     };
 
+    // MULTI-MESH MODELS
+    // A model is nothing more than a list of meshes (already living in the unified buffers), each with its own texture
+    // and its own placement relative to the root of the model. This is the flattened version of a node hierarchy,
+    // which is exactly what a glTF/OBJ/FBX loader would hand us once it has walked the file's node tree.
+
+    // One piece of a model that is already uploaded to the GPU (references a mesh and texture by identifier)
+    struct ModelSubmesh {
+        uint32_t m_MeshIdentifier{ 0 };
+        uint32_t m_TextureIdentifier{ 0 };
+        glm::mat4 m_LocalTransformRelativeToModelRoot{ 1.0f };
+    };
+
+    // One piece of a model that still needs to be uploaded to the GPU (raw geometry, what a model file loader would output)
+    struct ModelSubmeshGeometry {
+        std::vector<Vertex> m_Vertices;
+        std::vector<uint32_t> m_Indices;
+        uint32_t m_TextureIdentifier{ 0 };
+        glm::mat4 m_LocalTransformRelativeToModelRoot{ 1.0f };
+    };
+
+    // The renderer's stored description of a model
+    struct ModelAsset {
+        std::vector<ModelSubmesh> m_Submeshes;
+    };
+
 }
 
 #endif // !MESH_H

@@ -14,9 +14,9 @@ int Vulkanised::VulkanRenderer::init(GLFWwindow* newWindow)
 		return EXIT_FAILURE;
 	}
 
-	// Wrap it in a shared_ptr with a custom deleter
-	// We pass glfwDestroyWindow as the function to call when the ref count hits 0
-	m_Window = std::shared_ptr<GLFWwindow>(newWindow, glfwDestroyWindow);
+	// The renderer only BORROWS the window: whoever created it owns it (and already destroys it via their own shared_ptr).
+	// Giving this shared_ptr glfwDestroyWindow as well meant two unrelated owners would both destroy the same window.
+	m_Window = std::shared_ptr<GLFWwindow>(newWindow, [](GLFWwindow*) {});
 
 	try
 	{
@@ -45,10 +45,9 @@ int Vulkanised::VulkanRenderer::init(GLFWwindow* newWindow)
 
 		// UBO DEFAULTS
 		// - View & Projection
-		m_UboViewProjection.projection = glm::perspective(glm::radians(45.0f), (float)m_SwapchainExtent.width / (float)m_SwapchainExtent.height, 0.1f, 100.0f);
+		// Projection is now rebuilt every frame from the camera lens (see setCameraViewAndLens), this is just a sane default
+		updateProjectionMatrixFromCameraLens();
 		m_UboViewProjection.view = glm::lookAt(glm::vec3(2.0f, 0.0f, 2.0f), glm::vec3(0.0f, 0.0f, -2.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-
-		m_UboViewProjection.projection[1][1] *= -1;
 
 		// - LIGHTING DEFAULTS
 		m_UboViewProjection.lightPos = glm::vec4(0.0f, 2.0f, 2.0f, 1.0f); // Light floating up and forward
@@ -75,6 +74,15 @@ uint32_t Vulkanised::VulkanRenderer::loadMesh(const std::vector<Vertex>& vertice
 
 	VkDeviceSize vertexSize = sizeof(Vertex) * vertices.size();
 	VkDeviceSize indexSize = sizeof(uint32_t) * indices.size();
+
+	// Bigger models eat through the unified buffers a lot faster, so make sure we never write past their end
+	const VkDeviceSize UsedVertexBufferBytes = static_cast<VkDeviceSize>(m_CurrentVertexOffset) * sizeof(Vertex);
+	const VkDeviceSize UsedIndexBufferBytes = static_cast<VkDeviceSize>(m_CurrentIndexOffset) * sizeof(uint32_t);
+	if (UsedVertexBufferBytes + vertexSize > UNIFIED_BUFFER_SIZE || UsedIndexBufferBytes + indexSize > UNIFIED_BUFFER_SIZE)
+	{
+		LOGE("Unified geometry buffers are full ({} vertices, {} indices requested). Aborting load.", vertices.size(), indices.size());
+		return 0;
+	}
 
 	// 1. Stage Vertices
 	VkBuffer vStagingBuffer;
@@ -130,6 +138,14 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 
 	// 1. Sort the incoming ECS payload to maximize batching (Group by Mesh, then Texture)
 	std::vector<RenderInstance> sortedInstances = instances;
+
+	// The SSBO only has room for MAX_INSTANCES transforms. Multi-mesh models multiply the instance count, so guard it.
+	if (sortedInstances.size() > MAX_INSTANCES)
+	{
+		LOGW("{} render instances submitted, but only {} fit in the instance buffer. Dropping the rest.", sortedInstances.size(), MAX_INSTANCES);
+		sortedInstances.resize(MAX_INSTANCES);
+	}
+
 	std::sort(sortedInstances.begin(), sortedInstances.end(), [](const RenderInstance& a, const RenderInstance& b) {
 		if (a.meshID != b.meshID) return a.meshID < b.meshID;
 		return a.textureID < b.textureID;
@@ -142,6 +158,7 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	}
 
 	// 3. Update Camera & Record specific commands for this sorted layout
+	updateProjectionMatrixFromCameraLens();	// Cheap, and keeps the aspect ratio right after any resize
 	updateUniformBuffers(imageIndex);
 
 	// We pass the sorted list directly to recordCommands now
@@ -177,6 +194,107 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapchain(); return; }
 
 	m_CurrentFrame = (m_CurrentFrame + 1) % Utilities::Vulkan::c_MaxFrameDraws;
+}
+
+uint32_t Vulkanised::VulkanRenderer::createModel(const std::vector<ModelSubmesh>& SubmeshesMakingUpTheModel)
+{
+	ModelAsset NewModelAsset{};
+	NewModelAsset.m_Submeshes.reserve(SubmeshesMakingUpTheModel.size());
+
+	for (const ModelSubmesh& CurrentSubmesh : SubmeshesMakingUpTheModel)
+	{
+		// A submesh pointing at garbage would only be caught every single frame by recordCommands, so catch it once here instead
+		if (CurrentSubmesh.m_MeshIdentifier >= m_Meshes.size())
+		{
+			LOGW("Model submesh references mesh {}, which does not exist. Skipping that submesh.", CurrentSubmesh.m_MeshIdentifier);
+			continue;
+		}
+		if (CurrentSubmesh.m_TextureIdentifier >= m_SamplerDescriptorSets.size())
+		{
+			LOGW("Model submesh references texture {}, which does not exist. Skipping that submesh.", CurrentSubmesh.m_TextureIdentifier);
+			continue;
+		}
+		NewModelAsset.m_Submeshes.push_back(CurrentSubmesh);
+	}
+
+	if (NewModelAsset.m_Submeshes.empty())
+	{
+		LOGW("Created a model with no valid submeshes, it will not render anything.");
+	}
+
+	m_Models.push_back(std::move(NewModelAsset));
+	return static_cast<uint32_t>(m_Models.size() - 1);
+}
+
+uint32_t Vulkanised::VulkanRenderer::loadModel(const std::vector<ModelSubmeshGeometry>& SubmeshGeometriesMakingUpTheModel)
+{
+	std::vector<ModelSubmesh> UploadedSubmeshes;
+	UploadedSubmeshes.reserve(SubmeshGeometriesMakingUpTheModel.size());
+
+	for (const ModelSubmeshGeometry& CurrentSubmeshGeometry : SubmeshGeometriesMakingUpTheModel)
+	{
+		const size_t MeshCountBeforeUpload = m_Meshes.size();
+		const uint32_t UploadedMeshIdentifier = loadMesh(CurrentSubmeshGeometry.m_Vertices, CurrentSubmeshGeometry.m_Indices, static_cast<int>(CurrentSubmeshGeometry.m_TextureIdentifier));
+
+		// loadMesh returns 0 on failure without adding anything, so the only reliable check is whether the list grew
+		if (m_Meshes.size() == MeshCountBeforeUpload)
+		{
+			LOGW("A submesh of the model failed to upload. Skipping that submesh.");
+			continue;
+		}
+
+		UploadedSubmeshes.push_back({ UploadedMeshIdentifier, CurrentSubmeshGeometry.m_TextureIdentifier, CurrentSubmeshGeometry.m_LocalTransformRelativeToModelRoot });
+	}
+
+	return createModel(UploadedSubmeshes);
+}
+
+uint32_t Vulkanised::VulkanRenderer::createModelFromSingleMesh(uint32_t MeshIdentifier, uint32_t TextureIdentifier)
+{
+	return createModel({ ModelSubmesh{ MeshIdentifier, TextureIdentifier, glm::mat4(1.0f) } });
+}
+
+bool Vulkanised::VulkanRenderer::isModelIdentifierValid(uint32_t ModelIdentifier) const noexcept
+{
+	return ModelIdentifier < m_Models.size();
+}
+
+const ModelAsset& Vulkanised::VulkanRenderer::getModelAsset(uint32_t ModelIdentifier) const
+{
+	if (!isModelIdentifierValid(ModelIdentifier))
+	{
+		LOGNTHROW("Requested model {}, but only {} models exist.", ModelIdentifier, m_Models.size());
+	}
+	return m_Models[ModelIdentifier];
+}
+
+void Vulkanised::VulkanRenderer::setCameraViewAndLens(const glm::mat4& CameraViewMatrix, const glm::vec3& CameraWorldPosition, float VerticalFieldOfViewInRadians, float NearClippingPlaneDistance, float FarClippingPlaneDistance) noexcept
+{
+	m_UboViewProjection.view = CameraViewMatrix;
+	m_UboViewProjection.viewPos = glm::vec4(CameraWorldPosition, 1.0f);	// Specular lighting needs to know where the eye actually is
+
+	m_CameraVerticalFieldOfViewInRadians = VerticalFieldOfViewInRadians;
+	m_CameraNearClippingPlaneDistance = NearClippingPlaneDistance;
+	m_CameraFarClippingPlaneDistance = FarClippingPlaneDistance;
+}
+
+float Vulkanised::VulkanRenderer::getSwapchainAspectRatio() const noexcept
+{
+	// Minimised windows have a 0 height, don't divide by it
+	if (m_SwapchainExtent.height == 0)
+	{
+		return 1.0f;
+	}
+	return static_cast<float>(m_SwapchainExtent.width) / static_cast<float>(m_SwapchainExtent.height);
+}
+
+void Vulkanised::VulkanRenderer::updateProjectionMatrixFromCameraLens() noexcept
+{
+	// Explicitly the zero-to-one depth version, which is what Vulkan expects (GLM_FORCE_DEPTH_ZERO_TO_ONE in pch.h is defined after glm is included, so it never applied)
+	m_UboViewProjection.projection = glm::perspectiveRH_ZO(m_CameraVerticalFieldOfViewInRadians, getSwapchainAspectRatio(), m_CameraNearClippingPlaneDistance, m_CameraFarClippingPlaneDistance);
+
+	// Vulkan's clip space Y points down, GLM's points up
+	m_UboViewProjection.projection[1][1] *= -1;
 }
 
 void Vulkanised::VulkanRenderer::cleanup() noexcept

@@ -11,6 +11,9 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 # My very own rendering library (while it include its own stuff, it seems we still need to manually include them)
 add_subdirectory(external/Vulkanised)
 
+# EnTT, the ECS. Header only, vendored like stb_image
+add_subdirectory(external/entt)
+
 # Detect build environment based on CMAKE_BINARY_DIR
 # Used to set correct PATH and some clean up
 if(${CMAKE_BINARY_DIR} MATCHES ".*out/.*")
@@ -27,6 +30,13 @@ endif()
 # Set source files...
 set(SOURCES
     src/main.cpp
+    include/Hephaestian/Input/InputManager.h                    src/Input/InputManager.cpp
+    include/Hephaestian/ECS/Components.h
+    include/Hephaestian/ECS/Scene.h                             src/ECS/Scene.cpp
+    include/Hephaestian/ECS/Systems/TransformHierarchySystem.h  src/ECS/Systems/TransformHierarchySystem.cpp
+    include/Hephaestian/ECS/Systems/MovementSystems.h           src/ECS/Systems/MovementSystems.cpp
+    include/Hephaestian/ECS/Systems/CameraSystem.h              src/ECS/Systems/CameraSystem.cpp
+    include/Hephaestian/ECS/Systems/RenderSystem.h              src/ECS/Systems/RenderSystem.cpp
 )
 
 # Define your executable using the SOURCES variable
@@ -82,6 +92,7 @@ endif()
 # Link the libraries (if not on Window, we'll probably not be getting glm with vulkan)
 set(LIB_LIST
     Vulkanised # This include everything it includes for itself, so: glaze, vulkan, glm, stb_image and glfw (not that it should need to...)
+    EnTT::EnTT # The ECS
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE ${LIB_LIST})

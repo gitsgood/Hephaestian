@@ -32,6 +32,22 @@ public:
 	uint32_t loadMesh(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices, int texId);
 	void SubmitFrame(const std::vector<RenderInstance>& instances);
 
+	// - Multi-mesh models
+	// Creates a model out of meshes and textures that were already loaded. Returns the model identifier.
+	uint32_t createModel(const std::vector<ModelSubmesh>& SubmeshesMakingUpTheModel);
+	// Uploads every piece of geometry, then creates a model out of them. Returns the model identifier.
+	uint32_t loadModel(const std::vector<ModelSubmeshGeometry>& SubmeshGeometriesMakingUpTheModel);
+	// Convenience for the (very common) one mesh, one texture model.
+	uint32_t createModelFromSingleMesh(uint32_t MeshIdentifier, uint32_t TextureIdentifier);
+	[[nodiscard]] bool isModelIdentifierValid(uint32_t ModelIdentifier) const noexcept;
+	[[nodiscard]] const ModelAsset& getModelAsset(uint32_t ModelIdentifier) const;
+
+	// - Camera
+	// Sets what the next submitted frame will be seen from. The projection is rebuilt from these every frame using
+	// the current swapchain size, so window resizes are handled here and nobody else has to care about aspect ratio.
+	void setCameraViewAndLens(const glm::mat4& CameraViewMatrix, const glm::vec3& CameraWorldPosition, float VerticalFieldOfViewInRadians, float NearClippingPlaneDistance, float FarClippingPlaneDistance) noexcept;
+	[[nodiscard]] float getSwapchainAspectRatio() const noexcept;
+
 	void cleanup() noexcept;
 
 	~VulkanRenderer();
@@ -44,6 +60,15 @@ private:
 
 	// Asset Storage
 	std::vector<MeshAsset> m_Meshes;
+	std::vector<ModelAsset> m_Models;
+
+	// Camera lens settings (the view matrix itself lives in m_UboViewProjection)
+	float m_CameraVerticalFieldOfViewInRadians{ glm::radians(45.0f) };
+	float m_CameraNearClippingPlaneDistance{ 0.1f };
+	float m_CameraFarClippingPlaneDistance{ 100.0f };
+
+	// Rebuilds m_UboViewProjection.projection from the lens settings and the current swapchain extent
+	void updateProjectionMatrixFromCameraLens() noexcept;
 
 	// Unified Geometry Buffers (Replaces individual Mesh buffers)
 	VkBuffer m_GlobalVertexBuffer;
