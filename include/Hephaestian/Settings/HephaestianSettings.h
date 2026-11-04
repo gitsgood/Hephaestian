@@ -17,6 +17,10 @@ struct HephaestianSettings
 	bool m_ShowInfiniteGrid{ true };
 	std::array<float, 3> m_BackgroundClearColour{ 0.6f, 0.65f, 0.4f };	// RGB, 0 to 1. A plain array so the JSON stays a readable [r, g, b]
 
+	// The scene's one point light. Far away it behaves like the sun: the default sits high above and beside the quarry.
+	std::array<float, 3> m_LightWorldPosition{ 350.0f, 600.0f, 150.0f };
+	std::array<float, 3> m_LightColour{ 1.0f, 1.0f, 1.0f };			// RGB, 0 to 1
+
 	// Lets the settings manager tell whether anything actually changed (compares every member, so new ones are covered automatically)
 	[[nodiscard]] bool operator==(const HephaestianSettings&) const = default;
 };
@@ -44,7 +48,9 @@ struct glz::meta<Hephaestian::HephaestianSettings>
 	using T = Hephaestian::HephaestianSettings;
 	static constexpr auto value = glz::object(
 		"showInfiniteGrid", &T::m_ShowInfiniteGrid,
-		"backgroundClearColour", &T::m_BackgroundClearColour
+		"backgroundClearColour", &T::m_BackgroundClearColour,
+		"lightPosition", &T::m_LightWorldPosition,
+		"lightColour", &T::m_LightColour
 	);
 };
 

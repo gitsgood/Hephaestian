@@ -218,8 +218,9 @@ set(VULKANISED_ASSETS_PATH "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "Depreca
 #     [FILES_NEXT_TO_EXECUTABLE <file>...]   # loose files copied right beside the executable (e.g. the logger settings)
 # )
 # Vulkanised's compiled shaders are always deployed to assets/shaders/.
-# Files are only copied when they changed, and the step re-runs whenever any of them is edited. Adding or removing
-# files is picked up automatically too (CONFIGURE_DEPENDS), but deleted files are not removed from the deployed folder.
+# Each deployed asset folder is a MIRROR of its source: the step re-runs whenever a file in it is edited, added, moved or
+# deleted (CONFIGURE_DEPENDS + a fingerprint of the file list), and then rebuilds the folder from scratch, so a file that
+# was removed or moved in the source can't linger next to the executable and keep getting loaded.
 function(vulkanised_deploy_runtime_assets TARGET_NAME)
     cmake_parse_arguments(PARSE_ARGV 1 DEPLOY "" "" "ASSET_DIRECTORIES;FILES_NEXT_TO_EXECUTABLE")
 
@@ -244,8 +245,14 @@ function(vulkanised_deploy_runtime_assets TARGET_NAME)
 
         file(GLOB_RECURSE ASSET_FILES CONFIGURE_DEPENDS "${ABSOLUTE_ASSET_DIRECTORY}/*")
         list(APPEND DEPLOY_DEPENDENCIES ${ASSET_FILES})
-        list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different "${ABSOLUTE_ASSET_DIRECTORY}" "${ASSETS_DESTINATION}/${ASSET_FOLDER_NAME}")
+        list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E rm -rf "${ASSETS_DESTINATION}/${ASSET_FOLDER_NAME}")	# Mirror, not merge
+        list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E copy_directory "${ABSOLUTE_ASSET_DIRECTORY}" "${ASSETS_DESTINATION}/${ASSET_FOLDER_NAME}")
     endforeach()
+
+    # Deleting a file doesn't make anything "newer", so timestamps alone would never re-run the step. A fingerprint of the
+    # file list in the command does: when the list changes, the command changes, and the build system re-runs it.
+    string(SHA1 DEPLOYED_FILE_LIST_FINGERPRINT "${DEPLOY_DEPENDENCIES}")
+    list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E echo "Deployed asset list ${DEPLOYED_FILE_LIST_FINGERPRINT}")
 
     # 3. Loose files beside the executable
     foreach(LOOSE_FILE ${DEPLOY_FILES_NEXT_TO_EXECUTABLE})

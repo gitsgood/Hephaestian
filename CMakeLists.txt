@@ -28,6 +28,16 @@ set(FASTGLTF_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(FASTGLTF_ENABLE_DOCS OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/fastgltf SYSTEM)  # SYSTEM: its headers can't trip our warnings-as-errors
 
+# Maths, physics and terrain code with no rendering in it: shared by the game and the unit tests
+set(HEPHAESTIAN_MATH_SOURCES
+    include/Hephaestian/Splines/QuadraticBSplineBasis.h         src/Splines/QuadraticBSplineBasis.cpp
+    include/Hephaestian/Splines/BiquadraticBSplineSurface.h     src/Splines/BiquadraticBSplineSurface.cpp
+    include/Hephaestian/Splines/QuadraticBSplineCurve.h         src/Splines/QuadraticBSplineCurve.cpp
+    include/Hephaestian/Physics/TriangleSurface.h               src/Physics/TriangleSurface.cpp
+    include/Hephaestian/Physics/RollingBallPhysics.h            src/Physics/RollingBallPhysics.cpp
+    include/Hephaestian/Terrain/GroundHeightfield.h             src/Terrain/GroundHeightfield.cpp
+)
+
 # Set source files...
 set(SOURCES
     src/main.cpp
@@ -42,6 +52,8 @@ set(SOURCES
     include/Hephaestian/Settings/HephaestianSettings.h          src/Settings/HephaestianSettings.cpp
     include/Hephaestian/Settings/HephaestianSettingsManager.h   src/Settings/HephaestianSettingsManager.cpp
     include/Hephaestian/UI/HephaestianSettingsWidget.h          src/UI/HephaestianSettingsWidget.cpp
+    include/Hephaestian/Simulation/QuarryRollingBallDemo.h      src/Simulation/QuarryRollingBallDemo.cpp
+    ${HEPHAESTIAN_MATH_SOURCES}
 )
 
 # Define your executable using the SOURCES variable
@@ -54,6 +66,7 @@ vulkanised_deploy_runtime_assets(${PROJECT_NAME}
     ASSET_DIRECTORIES
         "${VULKANISED_SOURCE_DIRECTORY}/Textures"           # -> assets/Textures
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/Models"         # -> assets/Models (every model in here gets loaded at startup)
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/Terrain"        # -> assets/Terrain (point clouds, turned into surfaces at startup)
     FILES_NEXT_TO_EXECUTABLE
         "${CMAKE_CURRENT_SOURCE_DIR}/VulkanisedLoggerSettings.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/HephaestianSettings.json"
@@ -102,3 +115,18 @@ set(LIB_LIST
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE ${LIB_LIST})
+
+# UNIT TESTS: the maths, checked against the hand-calculated examples in the MAT301 notes (chapters 5, 9 and 12).
+# Build and run HephaestianMathTests (or "ctest" in the build folder): it prints every check and returns non-zero on failure.
+enable_testing()
+add_executable(HephaestianMathTests tests/HephaestianMathTests.cpp ${HEPHAESTIAN_MATH_SOURCES})
+target_include_directories(HephaestianMathTests PRIVATE include)
+target_link_libraries(HephaestianMathTests PRIVATE Vulkanised EnTT::EnTT)
+set_target_properties(HephaestianMathTests PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF COMPILE_WARNING_AS_ERROR ON)
+if (MSVC)
+    target_compile_options(HephaestianMathTests PRIVATE /W4)
+    target_link_options(HephaestianMathTests PRIVATE /SUBSYSTEM:CONSOLE)
+else()
+    target_compile_options(HephaestianMathTests PRIVATE -Wall -Wextra -pedantic)
+endif()
+add_test(NAME HephaestianMathTests COMMAND HephaestianMathTests)

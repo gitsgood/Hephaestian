@@ -7,6 +7,13 @@
 #include "Hephaestian/ECS/Components.h"
 #include "Hephaestian/Settings/HephaestianSettingsManager.h"
 #include "Hephaestian/UI/HephaestianSettingsWidget.h"
+#include "Hephaestian/Simulation/QuarryRollingBallDemo.h"
+
+#include <chrono>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <string_view>
 
 #include <imgui.h>
 
@@ -66,9 +73,26 @@ static void initWindow(std::string_view wName = "Test Window", const int width =
 //	return RandomTransform;
 //}
 
-auto main() -> int
+auto main(int ArgumentCount, char** Arguments) -> int
 {
 	using namespace Hephaestian;
+
+	// "--screenshot-and-exit <seconds> <file.bmp>": render for that long, save one frame, quit (automated checks)
+	// "--bspline-surface": roll on the B-spline surface from the start, "--follow-ball": start with the chase camera
+	std::optional<float> ScreenshotAndExitAfterSeconds;
+	std::filesystem::path ScreenshotAndExitFilePath;
+	bool ShouldStartOnBSplineSurface{ false };
+	bool ShouldStartWithChaseCamera{ false };
+	for (int CurrentArgumentIndex{ 1 }; CurrentArgumentIndex < ArgumentCount; ++CurrentArgumentIndex)
+	{
+		ShouldStartOnBSplineSurface = ShouldStartOnBSplineSurface || std::string_view(Arguments[CurrentArgumentIndex]) == "--bspline-surface";
+		ShouldStartWithChaseCamera = ShouldStartWithChaseCamera || std::string_view(Arguments[CurrentArgumentIndex]) == "--follow-ball";
+		if (std::string_view(Arguments[CurrentArgumentIndex]) == "--screenshot-and-exit" && CurrentArgumentIndex + 2 < ArgumentCount)
+		{
+			ScreenshotAndExitAfterSeconds = std::stof(Arguments[CurrentArgumentIndex + 1]);
+			ScreenshotAndExitFilePath = Arguments[CurrentArgumentIndex + 2];
+		}
+	}
 
 	LOGH("Bruh");
 
@@ -91,6 +115,8 @@ auto main() -> int
 			// Also runs once right now, applying the loaded values
 			renderer.setInfiniteGridVisible(NewSettings.m_ShowInfiniteGrid);
 			renderer.setClearColour({ NewSettings.m_BackgroundClearColour[0], NewSettings.m_BackgroundClearColour[1], NewSettings.m_BackgroundClearColour[2] });
+			renderer.setLightPosition({ NewSettings.m_LightWorldPosition[0], NewSettings.m_LightWorldPosition[1], NewSettings.m_LightWorldPosition[2] });
+			renderer.setLightColour({ NewSettings.m_LightColour[0], NewSettings.m_LightColour[1], NewSettings.m_LightColour[2] });
 
 			if (NewSettings.m_ShowInfiniteGrid != PreviousSettings.m_ShowInfiniteGrid)
 			{
@@ -206,6 +232,23 @@ auto main() -> int
 
 	GameScene.setActiveCameraEntity(PlayerCameraEntity);
 
+	// QUARRY: LiDAR scan -> ground triangulation + B-spline surface, with balls rolling on it (MAT301 chapters 9 and 12)
+	Simulation::QuarryRollingBallDemo QuarryDemo(renderer, GameScene);
+	if (QuarryDemo.loadTerrain(Vulkanised::Utilities::File::getRuntimeAssetsDirectory() / "Terrain" / "laz_mesh.obj"))
+	{
+		glm::vec3 SuggestedCameraPosition{ 0.0f };
+		glm::quat SuggestedCameraRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+		QuarryDemo.calculateSuggestedCameraPlacement(SuggestedCameraPosition, SuggestedCameraRotation);
+		auto& PlayerTransform = Registry.get<Components::TransformComponent>(PlayerEntity);
+		PlayerTransform.m_LocalPosition = SuggestedCameraPosition;
+		PlayerTransform.m_LocalRotation = SuggestedCameraRotation;
+		Registry.get<Components::FreeFlyMovementControllerComponent>(PlayerEntity).m_MovementSpeedInUnitsPerSecond = 12.0f;	// The quarry is ~100 m long
+
+		QuarryDemo.setPlayerCameraEntity(PlayerCameraEntity);
+		if (ShouldStartOnBSplineSurface) { QuarryDemo.setRollingSurface(Simulation::RollingSurfaceChoice::BSplineSurface); }
+		if (ShouldStartWithChaseCamera) { QuarryDemo.setCameraFollowsTrackedBall(true); }
+	}
+
 	LOG("Controls: left click to capture the mouse, Escape to release it, WASD/QE to move, Shift to sprint. Settings are in the ImGui window.");// , C to switch camera.");
 
 	float LastFrameTimeInSeconds = static_cast<float>(glfwGetTime());
@@ -225,6 +268,7 @@ auto main() -> int
 		// 1. UI (built first, so ImGui already knows this frame whether the mouse is over one of its windows)
 		renderer.beginImGuiFrame();
 		SettingsWidget.drawSettingsWindow();
+		QuarryDemo.drawPhysicsWindow(glm::vec3(Registry.get<Components::WorldTransformComponent>(PlayerCameraEntity).m_WorldTransformMatrix[3]));
 
 		// 2. APPLICATION-LEVEL INPUT
 		ImGuiIO& ImGuiInputOutput = ImGui::GetIO();
@@ -235,6 +279,23 @@ auto main() -> int
 		if (Input.wasKeyPressedThisFrame(GLFW_KEY_ESCAPE))
 		{
 			Input.setMouseCursorCaptured(false);
+		}
+		if (Input.wasKeyPressedThisFrame(GLFW_KEY_F12))
+		{
+			const auto ScreenshotTimestamp = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+			renderer.requestScreenshot(Vulkanised::Utilities::File::getExecutableDirectory() / "Screenshots" / ("Hephaestian_" + std::to_string(ScreenshotTimestamp) + ".bmp"));
+		}
+		if (ScreenshotAndExitAfterSeconds.has_value() && CurrentFrameTimeInSeconds >= ScreenshotAndExitAfterSeconds.value())
+		{
+			if (!renderer.isScreenshotPending() && !ScreenshotAndExitFilePath.empty())
+			{
+				renderer.requestScreenshot(ScreenshotAndExitFilePath);	// Saved by this frame's SubmitFrame
+				ScreenshotAndExitFilePath.clear();
+			}
+			else if (!renderer.isScreenshotPending())
+			{
+				glfwSetWindowShouldClose(window.load().get(), GLFW_TRUE);	// The screenshot frame has been submitted: done
+			}
 		}
 		// While looking around, the (hidden, locked) cursor must not hover or click ImGui windows behind our back
 		if (Input.isMouseCursorCaptured())
@@ -251,7 +312,8 @@ auto main() -> int
 		//	GameScene.setActiveCameraEntity(IsPlayerCameraActive ? TotemCameraEntity : PlayerCameraEntity);
 		//}
 
-		// 3. ECS SYSTEMS (movement, spinning, transform hierarchy)
+		// 3. PHYSICS (balls on the quarry), then the ECS SYSTEMS (movement, spinning, transform hierarchy)
+		QuarryDemo.update(DeltaTimeInSeconds);
 		GameScene.updateSimulation(Input, DeltaTimeInSeconds);
 
 		// 4. BUILD RENDER PACKET + SUBMIT TO RENDERER (active camera, then one instance per submesh of every model, then the UI on top)
