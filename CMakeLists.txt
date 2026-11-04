@@ -39,6 +39,9 @@ set(SOURCES
     include/Hephaestian/ECS/Systems/CameraSystem.h              src/ECS/Systems/CameraSystem.cpp
     include/Hephaestian/ECS/Systems/RenderSystem.h              src/ECS/Systems/RenderSystem.cpp
     include/Hephaestian/Assets/ModelImporter.h                  src/Assets/ModelImporter.cpp
+    include/Hephaestian/Settings/HephaestianSettings.h          src/Settings/HephaestianSettings.cpp
+    include/Hephaestian/Settings/HephaestianSettingsManager.h   src/Settings/HephaestianSettingsManager.cpp
+    include/Hephaestian/UI/HephaestianSettingsWidget.h          src/UI/HephaestianSettingsWidget.cpp
 )
 
 # Define your executable using the SOURCES variable
@@ -53,6 +56,7 @@ vulkanised_deploy_runtime_assets(${PROJECT_NAME}
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/Models"         # -> assets/Models (every model in here gets loaded at startup)
     FILES_NEXT_TO_EXECUTABLE
         "${CMAKE_CURRENT_SOURCE_DIR}/VulkanisedLoggerSettings.json"
+        "${CMAKE_CURRENT_SOURCE_DIR}/HephaestianSettings.json"
 )
 # (Paths are resolved from the exe's own location, so the working directory you launch from no longer matters.)
 

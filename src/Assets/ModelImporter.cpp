@@ -515,7 +515,10 @@ std::optional<ImportedModel> ModelImporter::importUfbxModel(const std::filesyste
 	ufbx_load_opts UfbxLoadOptions{};
 	UfbxLoadOptions.target_axes = ufbx_axes_right_handed_y_up;	// Same as the engine (and glTF)
 	UfbxLoadOptions.target_unit_meters = 1.0f;					// FBX is usually in centimetres, this makes it match glTF's metres
-	UfbxLoadOptions.generate_missing_normals = true;
+	// NOT generate_missing_normals: OBJs without smoothing groups count as flat shaded, so ufbx would give every triangle
+	// corner its own face normal. Nothing could be merged afterwards, tripling the vertex count (a 1M vertex scan became 2.8M).
+	// We build smooth normals ourselves instead, after the corners have been merged back into shared vertices.
+	UfbxLoadOptions.generate_missing_normals = false;
 	UfbxLoadOptions.load_external_files = true;					// .mtl files for OBJ
 	UfbxLoadOptions.ignore_missing_external_files = true;		// A missing .mtl shouldn't lose us the whole model
 	UfbxLoadOptions.obj_search_mtl_by_filename = true;
@@ -660,6 +663,12 @@ std::optional<ImportedModel> ModelImporter::importUfbxModel(const std::filesyste
 			{
 				PartIndices[CurrentIndex] = static_cast<std::uint32_t>(CurrentIndex);
 			}
+		}
+
+		// Every corner got the same placeholder normal above, so they merged purely on position/UV/colour. Now smooth them.
+		if (!UfbxMesh->vertex_normal.exists)
+		{
+			generateSmoothNormalsForTriangles(PartVertices, PartIndices);
 		}
 
 		const size_t MeshCountBeforeUpload = m_Renderer.getLoadedMeshCount();

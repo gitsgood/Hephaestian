@@ -7,15 +7,10 @@
 #include <string>
 #include <vector>
 
-// If we are in release mode, use the CMake generated headers (generated into the build folder, see CMakeLists.txt)
+// If we are in release mode, use the CMake generated headers (generated into the build folder, see CMakeLists.txt).
+// The registry holds every shader in src/shaders, looked up by .spv file name.
 #ifdef NDEBUG
-	inline constexpr uint32_t embedded_shader_vert[] =
-	#include "shaders/embedded_shader_vert.h"
-	;
-
-	inline constexpr uint32_t embedded_shader_frag[] =
-	#include "shaders/embedded_shader_frag.h"
-	;
+	#include "shaders/embedded_shader_registry.h"
 #endif
 
 namespace Vulkanised
@@ -56,15 +51,16 @@ namespace Vulkanised
 			[[nodiscard]] inline std::vector<uint32_t> readFile(const std::filesystem::path& FilePath)
 			{
 				#ifdef NDEBUG
+					// Exact file name match (the old "contains vert/frag" check would hand out shader.vert for ANY vertex shader)
 					const std::string FileNameOnly{ FilePath.filename().string() };
-					if (FileNameOnly.contains("vert"))
+					for (const auto& CurrentEmbeddedShader : EmbeddedShaders::c_AllEmbeddedShaders)
 					{
-						return std::vector<uint32_t>(std::begin(embedded_shader_vert), std::end(embedded_shader_vert));
+						if (CurrentEmbeddedShader.m_SpirvFileName == FileNameOnly)
+						{
+							return std::vector<uint32_t>(CurrentEmbeddedShader.m_SpirvWords.begin(), CurrentEmbeddedShader.m_SpirvWords.end());
+						}
 					}
-					else if (FileNameOnly.contains("frag"))
-					{
-						return std::vector<uint32_t>(std::begin(embedded_shader_frag), std::end(embedded_shader_frag));
-					}
+					// Not embedded: fall through and read it from disk like Debug does
 				#endif
 
 				// Open stream from given file

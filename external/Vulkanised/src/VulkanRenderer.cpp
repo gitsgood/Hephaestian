@@ -1,5 +1,9 @@
 #include "Vulkanised/VulkanRenderer.h"
 
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
+
 using namespace Vulkanised;
 
 Vulkanised::VulkanRenderer::VulkanRenderer()
@@ -29,6 +33,7 @@ int Vulkanised::VulkanRenderer::init(GLFWwindow* newWindow)
 		createRenderPass();
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
+		createInfiniteGridPipeline();
 		createDepthBufferImage();
 		createFramebuffers();
 		createCommandPool();
@@ -75,12 +80,26 @@ uint32_t Vulkanised::VulkanRenderer::loadMesh(const std::vector<Vertex>& vertice
 	VkDeviceSize vertexSize = sizeof(Vertex) * vertices.size();
 	VkDeviceSize indexSize = sizeof(uint32_t) * indices.size();
 
-	// Bigger models eat through the unified buffers a lot faster, so make sure we never write past their end
+	// Bigger models eat through the unified buffers a lot faster: grow them instead of writing past their end
 	const VkDeviceSize UsedVertexBufferBytes = static_cast<VkDeviceSize>(m_CurrentVertexOffset) * sizeof(Vertex);
 	const VkDeviceSize UsedIndexBufferBytes = static_cast<VkDeviceSize>(m_CurrentIndexOffset) * sizeof(uint32_t);
-	if (UsedVertexBufferBytes + vertexSize > UNIFIED_BUFFER_SIZE || UsedIndexBufferBytes + indexSize > UNIFIED_BUFFER_SIZE)
+	try
 	{
-		LOGE("Unified geometry buffers are full ({} vertices, {} indices requested). Aborting load.", vertices.size(), indices.size());
+		if (UsedVertexBufferBytes + vertexSize > m_GlobalVertexBufferCapacityInBytes)
+		{
+			growUnifiedBuffer(m_GlobalVertexBuffer, m_GlobalVertexBufferMemory, m_GlobalVertexBufferCapacityInBytes,
+				UsedVertexBufferBytes, UsedVertexBufferBytes + vertexSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, "vertex");
+		}
+		if (UsedIndexBufferBytes + indexSize > m_GlobalIndexBufferCapacityInBytes)
+		{
+			growUnifiedBuffer(m_GlobalIndexBuffer, m_GlobalIndexBufferMemory, m_GlobalIndexBufferCapacityInBytes,
+				UsedIndexBufferBytes, UsedIndexBufferBytes + indexSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, "index");
+		}
+	}
+	catch (const std::exception&)
+	{
+		// growUnifiedBuffer already logged why (most likely out of GPU memory). The old buffers are untouched.
+		LOGE("Couldn't make room for {} vertices / {} indices in the unified geometry buffers. Aborting load.", vertices.size(), indices.size());
 		return 0;
 	}
 
@@ -128,6 +147,16 @@ uint32_t Vulkanised::VulkanRenderer::loadMesh(const std::vector<Vertex>& vertice
 
 void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& instances)
 {
+	// Finish ImGui's frame FIRST, before anything below can bail out early (an out-of-date swapchain): every
+	// ImGui::NewFrame must be matched by a Render, or the next NewFrame asserts. Render only builds CPU-side draw data.
+	m_ShouldRenderImGuiThisFrame = false;
+	if (m_HasImGuiFrameBegun)
+	{
+		ImGui::Render();
+		m_HasImGuiFrameBegun = false;
+		m_ShouldRenderImGuiThisFrame = true;
+	}
+
 	// Wait & Reset Fences
 	vkWaitForFences(m_MainDevice.logicalDevice, 1, &m_DrawFences[m_CurrentFrame], VK_TRUE, std::numeric_limits<uint64_t>::max());
 	vkResetFences(m_MainDevice.logicalDevice, 1, &m_DrawFences[m_CurrentFrame]);
@@ -194,6 +223,98 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapchain(); return; }
 
 	m_CurrentFrame = (m_CurrentFrame + 1) % Utilities::Vulkan::c_MaxFrameDraws;
+}
+
+void Vulkanised::VulkanRenderer::initialiseImGui(GLFWwindow* WindowToReceiveImGuiInput)
+{
+	if (m_IsImGuiInitialised)
+	{
+		LOGW("ImGui is already initialised, ignoring the second initialiseImGui call.");
+		return;
+	}
+	if (WindowToReceiveImGuiInput == nullptr)
+	{
+		LOGNTHROW("initialiseImGui needs a window");
+	}
+
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGui::StyleColorsDark();
+
+	// imgui.ini (window positions/sizes) next to the exe, like every other runtime file, not wherever the working directory is
+	m_ImGuiIniFilePath = (Utilities::File::getExecutableDirectory() / "imgui.ini").string();
+	ImGui::GetIO().IniFilename = m_ImGuiIniFilePath.c_str();
+
+	// true = install callbacks, CHAINING to whatever was installed before (e.g. Hephaestian's InputManager), so both get input
+	ImGui_ImplGlfw_InitForVulkan(WindowToReceiveImGuiInput, true);
+
+	ImGui_ImplVulkan_InitInfo ImGuiVulkanInitInfo{};
+	ImGuiVulkanInitInfo.ApiVersion = VK_API_VERSION_1_4;	// Must match createInstance's appInfo.apiVersion
+	ImGuiVulkanInitInfo.Instance = m_Instance;
+	ImGuiVulkanInitInfo.PhysicalDevice = m_MainDevice.physicalDevice;
+	ImGuiVulkanInitInfo.Device = m_MainDevice.logicalDevice;
+	ImGuiVulkanInitInfo.QueueFamily = static_cast<uint32_t>(getQueueFamilies(m_MainDevice.physicalDevice).graphicsFamily);
+	ImGuiVulkanInitInfo.Queue = m_GraphicsQueue;
+	ImGuiVulkanInitInfo.DescriptorPoolSize = IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE * 2;	// Let the backend own its pool, so it can't eat into ours
+	ImGuiVulkanInitInfo.MinImageCount = 2;
+	ImGuiVulkanInitInfo.ImageCount = std::max<uint32_t>(2, static_cast<uint32_t>(m_SwapchainImages.size()));
+	ImGuiVulkanInitInfo.PipelineInfoMain.RenderPass = m_RenderPass;	// Drawn inside our one render pass, subpass 0
+	ImGuiVulkanInitInfo.PipelineInfoMain.Subpass = 0;
+	ImGuiVulkanInitInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+	ImGuiVulkanInitInfo.CheckVkResultFn = [](VkResult ImGuiVulkanResult)
+	{
+		if (ImGuiVulkanResult < 0)
+		{
+			LOGE("ImGui Vulkan backend error: VkResult {}", static_cast<int>(ImGuiVulkanResult));
+		}
+	};
+
+	if (!ImGui_ImplVulkan_Init(&ImGuiVulkanInitInfo))
+	{
+		ImGui_ImplGlfw_Shutdown();
+		ImGui::DestroyContext();
+		LOGNTHROW("Failed to initialise the ImGui Vulkan backend");
+	}
+
+	m_IsImGuiInitialised = true;
+	LOG("ImGui {} initialised", IMGUI_VERSION);
+}
+
+void Vulkanised::VulkanRenderer::beginImGuiFrame()
+{
+	if (!m_IsImGuiInitialised)
+	{
+		return;
+	}
+	if (m_HasImGuiFrameBegun)
+	{
+		// Two begins without a SubmitFrame in between: close the old frame so ImGui's own frame bookkeeping stays balanced
+		ImGui::EndFrame();
+	}
+
+	ImGui_ImplVulkan_NewFrame();
+	ImGui_ImplGlfw_NewFrame();
+	ImGui::NewFrame();
+	m_HasImGuiFrameBegun = true;
+}
+
+void Vulkanised::VulkanRenderer::shutdownImGui() noexcept
+{
+	if (!m_IsImGuiInitialised)
+	{
+		return;
+	}
+	if (m_HasImGuiFrameBegun)
+	{
+		ImGui::EndFrame();
+		m_HasImGuiFrameBegun = false;
+	}
+
+	ImGui_ImplVulkan_Shutdown();
+	ImGui_ImplGlfw_Shutdown();	// Also puts back the GLFW callbacks it chained onto
+	ImGui::DestroyContext();
+	m_IsImGuiInitialised = false;
+	m_ShouldRenderImGuiThisFrame = false;
 }
 
 uint32_t Vulkanised::VulkanRenderer::createModel(const std::vector<ModelSubmesh>& SubmeshesMakingUpTheModel)
@@ -302,6 +423,9 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 	// Wait until no actions being run on device before destroying
 	vkDeviceWaitIdle(m_MainDevice.logicalDevice);
 
+	// ImGui owns Vulkan objects of its own (pipeline, font texture, descriptor pool), so it goes before the device does
+	shutdownImGui();
+
 	//_aligned_free(m_ModelTransferSpace);
 
 	if (m_SamplerDescriptorPool != VK_NULL_HANDLE)
@@ -405,6 +529,11 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 	}
 
 
+	if (m_InfiniteGridPipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(m_MainDevice.logicalDevice, m_InfiniteGridPipeline, nullptr);
+		m_InfiniteGridPipeline = VK_NULL_HANDLE;
+	}
 	if (m_GraphicsPipeline != VK_NULL_HANDLE)
 	{
 		vkDestroyPipeline(m_MainDevice.logicalDevice, m_GraphicsPipeline, nullptr);
@@ -456,15 +585,61 @@ Vulkanised::VulkanRenderer::~VulkanRenderer()
 
 void Vulkanised::VulkanRenderer::createUnifiedBuffers()
 {
-	// Create one massive 64MB buffer for all vertices
-	Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, UNIFIED_BUFFER_SIZE,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+	// Create one massive 64MB buffer for all vertices (TRANSFER_SRC too, so it can be copied into a bigger one when it fills up)
+	Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, m_GlobalVertexBufferCapacityInBytes,
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &m_GlobalVertexBuffer, &m_GlobalVertexBufferMemory);
 
 	// Create one massive 64MB buffer for all indices
-	Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, UNIFIED_BUFFER_SIZE,
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+	Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, m_GlobalIndexBufferCapacityInBytes,
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &m_GlobalIndexBuffer, &m_GlobalIndexBufferMemory);
+}
+
+void Vulkanised::VulkanRenderer::growUnifiedBuffer(VkBuffer& BufferToGrow, VkDeviceMemory& BufferMemoryToGrow, VkDeviceSize& BufferCapacityInBytes,
+	VkDeviceSize UsedBytesToKeep, VkDeviceSize RequiredCapacityInBytes, VkBufferUsageFlags BufferUsage, std::string_view BufferNameForLogging)
+{
+	// Doubling keeps the number of (slow) grows logarithmic when lots of meshes are loaded one after another
+	VkDeviceSize NewCapacityInBytes = std::max(BufferCapacityInBytes, UNIFIED_BUFFER_SIZE);
+	while (NewCapacityInBytes < RequiredCapacityInBytes)
+	{
+		NewCapacityInBytes *= 2;
+	}
+
+	// The old buffer may still be in use by frames in flight, and the draw commands are re-recorded every frame,
+	// so once the GPU is idle we can swap the buffer out from under everyone without them noticing
+	vkDeviceWaitIdle(m_MainDevice.logicalDevice);
+
+	VkBuffer GrownBuffer{ VK_NULL_HANDLE };
+	VkDeviceMemory GrownBufferMemory{ VK_NULL_HANDLE };
+	try
+	{
+		Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, NewCapacityInBytes,
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | BufferUsage,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &GrownBuffer, &GrownBufferMemory);
+	}
+	catch (const std::exception&)
+	{
+		// createBuffer can fail half way through (buffer made, memory not), so clean up whatever exists
+		if (GrownBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(m_MainDevice.logicalDevice, GrownBuffer, nullptr); }
+		if (GrownBufferMemory != VK_NULL_HANDLE) { vkFreeMemory(m_MainDevice.logicalDevice, GrownBufferMemory, nullptr); }
+		LOGE("Failed to grow the unified {} buffer to {} MB.", BufferNameForLogging, NewCapacityInBytes / (1024 * 1024));
+		throw;
+	}
+
+	if (UsedBytesToKeep > 0)
+	{
+		Utilities::Vulkan::copyBuffer(m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool, BufferToGrow, GrownBuffer, UsedBytesToKeep, 0);
+	}
+
+	vkDestroyBuffer(m_MainDevice.logicalDevice, BufferToGrow, nullptr);
+	vkFreeMemory(m_MainDevice.logicalDevice, BufferMemoryToGrow, nullptr);
+
+	LOG("Grew the unified {} buffer from {} MB to {} MB.", BufferNameForLogging, BufferCapacityInBytes / (1024 * 1024), NewCapacityInBytes / (1024 * 1024));
+
+	BufferToGrow = GrownBuffer;
+	BufferMemoryToGrow = GrownBufferMemory;
+	BufferCapacityInBytes = NewCapacityInBytes;
 }
 
 void Vulkanised::VulkanRenderer::createSSBOs()
@@ -1082,6 +1257,107 @@ void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 	vkDestroyShaderModule(m_MainDevice.logicalDevice, vertexShaderModule, nullptr);
 }
 
+void Vulkanised::VulkanRenderer::createInfiniteGridPipeline()
+{
+	const std::vector<uint32_t> InfiniteGridVertexShaderCode = Utilities::File::readFile(Utilities::File::getRuntimeAssetsDirectory() / Utilities::File::c_ShadersFolderName / "infinite_grid.vert.spv");
+	const std::vector<uint32_t> InfiniteGridFragmentShaderCode = Utilities::File::readFile(Utilities::File::getRuntimeAssetsDirectory() / Utilities::File::c_ShadersFolderName / "infinite_grid.frag.spv");
+
+	VkShaderModule InfiniteGridVertexShaderModule = createShaderModule(InfiniteGridVertexShaderCode);
+	VkShaderModule InfiniteGridFragmentShaderModule = createShaderModule(InfiniteGridFragmentShaderCode);
+
+	std::array<VkPipelineShaderStageCreateInfo, 2> InfiniteGridShaderStages{};
+	InfiniteGridShaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	InfiniteGridShaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	InfiniteGridShaderStages[0].module = InfiniteGridVertexShaderModule;
+	InfiniteGridShaderStages[0].pName = "main";
+	InfiniteGridShaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	InfiniteGridShaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	InfiniteGridShaderStages[1].module = InfiniteGridFragmentShaderModule;
+	InfiniteGridShaderStages[1].pName = "main";
+
+	// No vertex buffer at all: the vertex shader builds the quad from gl_VertexIndex
+	VkPipelineVertexInputStateCreateInfo EmptyVertexInputCreateInfo{};
+	EmptyVertexInputCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+	VkPipelineInputAssemblyStateCreateInfo InputAssemblyCreateInfo{};
+	InputAssemblyCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	InputAssemblyCreateInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+	// Viewport and scissor are dynamic, exactly like the main pipeline
+	const std::array<VkDynamicState, 2> DynamicStates{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+	VkPipelineDynamicStateCreateInfo DynamicStateCreateInfo{};
+	DynamicStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	DynamicStateCreateInfo.dynamicStateCount = static_cast<uint32_t>(DynamicStates.size());
+	DynamicStateCreateInfo.pDynamicStates = DynamicStates.data();
+
+	VkPipelineViewportStateCreateInfo ViewportStateCreateInfo{};
+	ViewportStateCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	ViewportStateCreateInfo.viewportCount = 1;
+	ViewportStateCreateInfo.scissorCount = 1;
+
+	// No culling: the grid has to be visible from below too
+	VkPipelineRasterizationStateCreateInfo RasterizerCreateInfo{};
+	RasterizerCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	RasterizerCreateInfo.polygonMode = VK_POLYGON_MODE_FILL;
+	RasterizerCreateInfo.lineWidth = 1.0f;
+	RasterizerCreateInfo.cullMode = VK_CULL_MODE_NONE;
+	RasterizerCreateInfo.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+	VkPipelineMultisampleStateCreateInfo MultisamplingCreateInfo{};
+	MultisamplingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	MultisamplingCreateInfo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	// Classic alpha blending, the grid lines are mostly transparent
+	VkPipelineColorBlendAttachmentState AlphaBlendedColourAttachment{};
+	AlphaBlendedColourAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	AlphaBlendedColourAttachment.blendEnable = VK_TRUE;
+	AlphaBlendedColourAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+	AlphaBlendedColourAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	AlphaBlendedColourAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+	AlphaBlendedColourAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	AlphaBlendedColourAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	AlphaBlendedColourAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+	VkPipelineColorBlendStateCreateInfo ColourBlendingCreateInfo{};
+	ColourBlendingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	ColourBlendingCreateInfo.attachmentCount = 1;
+	ColourBlendingCreateInfo.pAttachments = &AlphaBlendedColourAttachment;
+
+	// Tested against the depth buffer (meshes hide the grid) but never written to it (the grid never hides anything)
+	VkPipelineDepthStencilStateCreateInfo DepthStencilCreateInfo{};
+	DepthStencilCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	DepthStencilCreateInfo.depthTestEnable = VK_TRUE;
+	DepthStencilCreateInfo.depthWriteEnable = VK_FALSE;
+	DepthStencilCreateInfo.depthCompareOp = VK_COMPARE_OP_LESS;
+
+	VkGraphicsPipelineCreateInfo InfiniteGridPipelineCreateInfo{};
+	InfiniteGridPipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	InfiniteGridPipelineCreateInfo.stageCount = static_cast<uint32_t>(InfiniteGridShaderStages.size());
+	InfiniteGridPipelineCreateInfo.pStages = InfiniteGridShaderStages.data();
+	InfiniteGridPipelineCreateInfo.pVertexInputState = &EmptyVertexInputCreateInfo;
+	InfiniteGridPipelineCreateInfo.pInputAssemblyState = &InputAssemblyCreateInfo;
+	InfiniteGridPipelineCreateInfo.pViewportState = &ViewportStateCreateInfo;
+	InfiniteGridPipelineCreateInfo.pDynamicState = &DynamicStateCreateInfo;
+	InfiniteGridPipelineCreateInfo.pRasterizationState = &RasterizerCreateInfo;
+	InfiniteGridPipelineCreateInfo.pMultisampleState = &MultisamplingCreateInfo;
+	InfiniteGridPipelineCreateInfo.pColorBlendState = &ColourBlendingCreateInfo;
+	InfiniteGridPipelineCreateInfo.pDepthStencilState = &DepthStencilCreateInfo;
+	InfiniteGridPipelineCreateInfo.layout = m_PipelineLayout;	// Same layout as the main pipeline: the grid only uses set 0 (the camera UBO)
+	InfiniteGridPipelineCreateInfo.renderPass = m_RenderPass;
+	InfiniteGridPipelineCreateInfo.subpass = 0;
+	InfiniteGridPipelineCreateInfo.basePipelineIndex = -1;
+
+	const VkResult PipelineCreationResult = vkCreateGraphicsPipelines(m_MainDevice.logicalDevice, VK_NULL_HANDLE, 1, &InfiniteGridPipelineCreateInfo, nullptr, &m_InfiniteGridPipeline);
+
+	vkDestroyShaderModule(m_MainDevice.logicalDevice, InfiniteGridFragmentShaderModule, nullptr);
+	vkDestroyShaderModule(m_MainDevice.logicalDevice, InfiniteGridVertexShaderModule, nullptr);
+
+	if (PipelineCreationResult != VK_SUCCESS)
+	{
+		LOGNTHROW("Failed to create the infinite grid pipeline!");
+	}
+}
+
 void Vulkanised::VulkanRenderer::createDepthBufferImage()
 {
 	// Get supported format for depth buffer
@@ -1566,7 +1842,7 @@ void Vulkanised::VulkanRenderer::recordCommands(uint32_t currentImage, const std
 	renderPassBeginInfo.renderArea.extent = m_SwapchainExtent;				// Size of region to run render pass on, starting at offset
 
 	std::array<VkClearValue, 2> clearValues = {};
-	clearValues[0].color = { 0.6f, 0.65f, 0.4f, 1.0f };
+	clearValues[0].color = { m_ClearColour.r, m_ClearColour.g, m_ClearColour.b, 1.0f };
 	clearValues[1].depthStencil.depth = 1.0f;
 
 	renderPassBeginInfo.pClearValues = clearValues.data();					// List of clear values
@@ -1641,6 +1917,21 @@ void Vulkanised::VulkanRenderer::recordCommands(uint32_t currentImage, const std
 
 		// Advance to next batch
 		firstInstance += instanceCount;
+	}
+
+	// INFINITE GRID, last: it's transparent, so it has to blend over whatever opaque geometry is already there
+	if (m_IsInfiniteGridVisible && m_InfiniteGridPipeline != VK_NULL_HANDLE)
+	{
+		vkCmdBindPipeline(m_CommandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, m_InfiniteGridPipeline);
+		// Bound explicitly, since with zero instances the loop above never bound set 0
+		vkCmdBindDescriptorSets(m_CommandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &m_DescriptorSets[currentImage], 0, nullptr);
+		vkCmdDraw(m_CommandBuffers[currentImage], 6, 1, 0, 0);	// One quad, two triangles, all made up in the vertex shader
+	}
+
+	// DEAR IMGUI, very last so it sits on top of everything (it binds its own pipeline, viewport and scissor)
+	if (m_ShouldRenderImGuiThisFrame)
+	{
+		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), m_CommandBuffers[currentImage]);
 	}
 
 	vkCmdEndRenderPass(m_CommandBuffers[currentImage]);

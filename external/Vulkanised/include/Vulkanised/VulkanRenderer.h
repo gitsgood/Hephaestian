@@ -51,6 +51,21 @@ public:
 	void setCameraViewAndLens(const glm::mat4& CameraViewMatrix, const glm::vec3& CameraWorldPosition, float VerticalFieldOfViewInRadians, float NearClippingPlaneDistance, float FarClippingPlaneDistance) noexcept;
 	[[nodiscard]] float getSwapchainAspectRatio() const noexcept;
 
+	// - Background
+	void setClearColour(const glm::vec3& NewClearColour) noexcept { m_ClearColour = NewClearColour; }
+	[[nodiscard]] const glm::vec3& getClearColour() const noexcept { return m_ClearColour; }
+
+	// - Dear ImGui (optional, drawn on top of everything)
+	// Call AFTER the application installed its own GLFW input callbacks: ImGui chains onto them, so both keep receiving input.
+	void initialiseImGui(GLFWwindow* WindowToReceiveImGuiInput);
+	// Call once per frame, before any ImGui:: window code. SubmitFrame then renders whatever was built.
+	void beginImGuiFrame();
+	[[nodiscard]] bool isImGuiInitialised() const noexcept { return m_IsImGuiInitialised; }
+
+	// - Infinite grid (XZ plane at y = 0, follows the camera, fades out ~100 units away). Off by default.
+	void setInfiniteGridVisible(bool ShouldInfiniteGridBeVisible) noexcept { m_IsInfiniteGridVisible = ShouldInfiniteGridBeVisible; }
+	[[nodiscard]] bool isInfiniteGridVisible() const noexcept { return m_IsInfiniteGridVisible; }
+
 	void cleanup() noexcept;
 
 	~VulkanRenderer();
@@ -59,7 +74,7 @@ private:
 	// ECS OVERHAUL
 	// Limits
 	static constexpr uint32_t MAX_INSTANCES = 100000;
-	static constexpr VkDeviceSize UNIFIED_BUFFER_SIZE = 64 * 1024 * 1024; // 64 MB for geometry
+	static constexpr VkDeviceSize UNIFIED_BUFFER_SIZE = 64 * 1024 * 1024; // 64 MB for geometry to start with, the buffers grow (doubling) when a mesh doesn't fit
 
 	// Asset Storage
 	std::vector<MeshAsset> m_Meshes;
@@ -73,6 +88,20 @@ private:
 	// Rebuilds m_UboViewProjection.projection from the lens settings and the current swapchain extent
 	void updateProjectionMatrixFromCameraLens() noexcept;
 
+	glm::vec3 m_ClearColour{ 0.6f, 0.65f, 0.4f };
+
+	// Dear ImGui
+	bool m_IsImGuiInitialised{ false };
+	bool m_HasImGuiFrameBegun{ false };		// beginImGuiFrame was called and SubmitFrame hasn't consumed it yet
+	bool m_ShouldRenderImGuiThisFrame{ false };
+	std::string m_ImGuiIniFilePath;			// Must outlive ImGui, which only keeps the pointer
+	void shutdownImGui() noexcept;
+
+	// Infinite grid: its own pipeline (no vertex buffer, alpha blended, no depth writes), sharing m_PipelineLayout
+	VkPipeline m_InfiniteGridPipeline{ VK_NULL_HANDLE };
+	bool m_IsInfiniteGridVisible{ false };
+	void createInfiniteGridPipeline();
+
 	// Unified Geometry Buffers (Replaces individual Mesh buffers)
 	VkBuffer m_GlobalVertexBuffer;
 	VkDeviceMemory m_GlobalVertexBufferMemory;
@@ -81,6 +110,14 @@ private:
 	VkBuffer m_GlobalIndexBuffer;
 	VkDeviceMemory m_GlobalIndexBufferMemory;
 	uint32_t m_CurrentIndexOffset{ 0 };
+
+	VkDeviceSize m_GlobalVertexBufferCapacityInBytes{ UNIFIED_BUFFER_SIZE };
+	VkDeviceSize m_GlobalIndexBufferCapacityInBytes{ UNIFIED_BUFFER_SIZE };
+
+	// Replaces the buffer with a bigger one (at least RequiredCapacityInBytes, usually double) and copies the used part over on the GPU.
+	// Waits for the device to go idle, so it's meant for load time, not the middle of gameplay.
+	void growUnifiedBuffer(VkBuffer& BufferToGrow, VkDeviceMemory& BufferMemoryToGrow, VkDeviceSize& BufferCapacityInBytes,
+		VkDeviceSize UsedBytesToKeep, VkDeviceSize RequiredCapacityInBytes, VkBufferUsageFlags BufferUsage, std::string_view BufferNameForLogging);
 
 	// SSBO for Instance Transforms (Replaces Push Constants)
 	std::vector<VkBuffer> m_SSBO;
