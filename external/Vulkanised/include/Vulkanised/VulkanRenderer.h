@@ -91,6 +91,15 @@ public:
 	void setInfiniteGridVisible(bool ShouldInfiniteGridBeVisible) noexcept { m_IsInfiniteGridVisible = ShouldInfiniteGridBeVisible; }
 	[[nodiscard]] bool isInfiniteGridVisible() const noexcept { return m_IsInfiniteGridVisible; }
 
+	// - Vertical sync: on = one frame per display refresh (FIFO), off = as fast as possible (mailbox when available). Off by
+	//   default. Changing it rebuilds the swapchain at the start of the next frame.
+	void setVerticalSyncEnabled(bool ShouldSyncToDisplay) noexcept
+	{
+		m_IsSwapchainRecreationRequested = m_IsSwapchainRecreationRequested || ShouldSyncToDisplay != m_IsVerticalSyncEnabled;
+		m_IsVerticalSyncEnabled = ShouldSyncToDisplay;
+	}
+	[[nodiscard]] bool isVerticalSyncEnabled() const noexcept { return m_IsVerticalSyncEnabled; }
+
 	// - Diagnostics
 	[[nodiscard]] const Rendering::FrameStatistics& getFrameStatistics() const noexcept { return m_FrameStatistics; }
 	[[nodiscard]] Rendering::GpuMemoryStatistics getGpuMemoryStatistics() const { return m_GpuMemory.getStatistics(); }
@@ -167,6 +176,8 @@ private:
 	// Infinite grid: its own pipeline (no vertex buffer, alpha blended, no depth writes), sharing m_PipelineLayout
 	VkPipeline m_InfiniteGridPipeline{ VK_NULL_HANDLE };
 	bool m_IsInfiniteGridVisible{ false };
+	bool m_IsVerticalSyncEnabled{ false };
+	bool m_IsSwapchainRecreationRequested{ false };	// Something other than the window size needs a new swapchain
 	void createInfiniteGridPipeline();
 
 	// Unified Geometry Buffers (Replaces individual Mesh buffers). Their capacity is their m_SizeInBytes.
@@ -265,6 +276,11 @@ private:
 	void createGraphicsPipeline();
 	void createDepthBufferImage();
 	void createTextureSamplers();
+
+	// Compiled pipelines, kept between runs in PipelineCache.bin next to the exe (src/Rendering/PipelineCache.cpp)
+	VkPipelineCache m_PipelineCache{ VK_NULL_HANDLE };
+	void createPipelineCache();
+	void saveAndDestroyPipelineCache() noexcept;
 
 	void createDescriptorPool();
 

@@ -47,8 +47,13 @@ void main() {
     // Pass data to fragment shader
     fragPos = worldPos.xyz;
 
-    // Transform normal into world space (ignoring non-uniform scaling issues for performance)
-    fragNormal = mat3(modelMatrix) * inNormal;
+    // Normal into world space with the cofactor of the model matrix: the inverse-transpose up to a scale factor (normalised in
+    // the fragment shader anyway), so normals stay perpendicular to the surface under NON-uniform scale too (a squashed sphere),
+    // for three cross products instead of a matrix inverse. The determinant's sign keeps mirrored instances facing outwards.
+    mat3 LinearPart = mat3(modelMatrix);
+    mat3 NormalMatrix = mat3(cross(LinearPart[1], LinearPart[2]), cross(LinearPart[2], LinearPart[0]), cross(LinearPart[0], LinearPart[1]));
+    NormalMatrix *= sign(dot(LinearPart[0], NormalMatrix[0]));
+    fragNormal = NormalMatrix * inNormal;
 
     fragColor = inColor * Instance.Tint.rgb;
     fragTexCoord = inTexCoord * Instance.TextureCoordinateRect.zw + Instance.TextureCoordinateRect.xy;

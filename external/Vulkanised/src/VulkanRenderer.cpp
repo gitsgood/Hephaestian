@@ -33,6 +33,7 @@ int Vulkanised::VulkanRenderer::init(GLFWwindow* newWindow)
 		m_GpuMemory.initialise(m_Instance, m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, std::min<uint32_t>(m_PhysicalDeviceProperties.apiVersion, VK_API_VERSION_1_4));
 		createSwapchain();
 		chooseDepthBufferFormat();	// Before the pipelines: they need to know the depth format
+		createPipelineCache();		// Before any pipeline: they all compile through it
 		createDescriptorSetLayout();
 		createGraphicsPipeline();
 		createInfiniteGridPipeline();
@@ -156,9 +157,10 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	}
 	m_PreviousSubmitFrameStartTime = SubmitFrameStartTime;
 
-	// The window was resized (or minimised): rebuild the swapchain first, instead of waiting for the driver to complain
-	if (doesSwapchainNeedRecreation())
+	// The window was resized (or minimised), or the present mode changed (vertical sync): rebuild the swapchain first
+	if (m_IsSwapchainRecreationRequested || doesSwapchainNeedRecreation())
 	{
+		m_IsSwapchainRecreationRequested = false;
 		recreateSwapchain();
 	}
 
@@ -607,6 +609,7 @@ void Vulkanised::VulkanRenderer::initialiseImGui(GLFWwindow* WindowToReceiveImGu
 	ImGuiVulkanInitInfo.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &m_SwapchainOverlayFormat;	// Overlay pass (UNORM view). ImGui copies it.
 	ImGuiVulkanInitInfo.PipelineInfoMain.PipelineRenderingCreateInfo.depthAttachmentFormat = m_DepthBufferFormat;
 	ImGuiVulkanInitInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+	ImGuiVulkanInitInfo.PipelineCache = m_PipelineCache;	// Its pipelines are cached with ours
 	ImGuiVulkanInitInfo.CheckVkResultFn = [](VkResult ImGuiVulkanResult)
 	{
 		if (ImGuiVulkanResult < 0)
@@ -836,6 +839,7 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 		m_PipelineLayout = VK_NULL_HANDLE;
 	}
 	// Every buffer and image is gone by now, so the allocator can go (it reports anything that leaked)
+	saveAndDestroyPipelineCache();	// Written next to the exe for the next start
 	m_GpuMemory.shutdown();
 
 	if (m_MainDevice.logicalDevice != VK_NULL_HANDLE)
@@ -1457,7 +1461,9 @@ void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 	VkPipelineColorBlendAttachmentState colourState{};
 	// Colours to apply bending to
 	colourState.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	colourState.blendEnable = VK_TRUE;		// Enable blending
+	// Opaque geometry overwrites what's behind it: blending would only cost bandwidth (the fragment shader writes alpha 1).
+	// The grid has its own, blended pipeline. The factors below only matter if this is ever turned back on.
+	colourState.blendEnable = VK_FALSE;
 
 	// Blending uses equation : (srcColorBlendFactor * new colour) colorBlendOp (dstColorBlendFactor * old colour)
 	colourState.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -1535,7 +1541,7 @@ void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 	graphicsPipelineCreateInfo.basePipelineIndex = -1;					// or index of pipeline being created to derive from (in case creating multiple at once)
 
 	// Create graphics pipeline
-	if (vkCreateGraphicsPipelines(m_MainDevice.logicalDevice, VK_NULL_HANDLE, 1, &graphicsPipelineCreateInfo, nullptr, &m_GraphicsPipeline) != VK_SUCCESS)
+	if (vkCreateGraphicsPipelines(m_MainDevice.logicalDevice, m_PipelineCache, 1, &graphicsPipelineCreateInfo, nullptr, &m_GraphicsPipeline) != VK_SUCCESS)
 	{
 		LOGNTHROW("failed to create pipeline(s)!");
 	}
@@ -1640,7 +1646,7 @@ void Vulkanised::VulkanRenderer::createInfiniteGridPipeline()
 	InfiniteGridPipelineCreateInfo.renderPass = VK_NULL_HANDLE;
 	InfiniteGridPipelineCreateInfo.basePipelineIndex = -1;
 
-	const VkResult PipelineCreationResult = vkCreateGraphicsPipelines(m_MainDevice.logicalDevice, VK_NULL_HANDLE, 1, &InfiniteGridPipelineCreateInfo, nullptr, &m_InfiniteGridPipeline);
+	const VkResult PipelineCreationResult = vkCreateGraphicsPipelines(m_MainDevice.logicalDevice, m_PipelineCache, 1, &InfiniteGridPipelineCreateInfo, nullptr, &m_InfiniteGridPipeline);
 
 	vkDestroyShaderModule(m_MainDevice.logicalDevice, InfiniteGridFragmentShaderModule, nullptr);
 	vkDestroyShaderModule(m_MainDevice.logicalDevice, InfiniteGridVertexShaderModule, nullptr);
@@ -2395,16 +2401,20 @@ VkSurfaceFormatKHR Vulkanised::VulkanRenderer::chooseBestSurfaceFormat(const std
 
 VkPresentModeKHR Vulkanised::VulkanRenderer::chooseBestPresentationMode(const std::vector<VkPresentModeKHR>& presentationModes)
 {
-	// Look for Mailbox presentation mode
-	for (const auto& presentationMode : presentationModes)
+	// Vertical sync: FIFO, one image per display refresh. The only mode the spec guarantees, and the GPU idles in between.
+	if (m_IsVerticalSyncEnabled)
 	{
-		if (presentationMode == VK_PRESENT_MODE_MAILBOX_KHR)
-		{
-			return presentationMode;
-		}
+		return VK_PRESENT_MODE_FIFO_KHR;
 	}
 
-	// If can't find, use FIFO as Vulkan spec says it must be present
+	// Uncapped: mailbox (newest finished frame replaces the queued one, no tearing), then immediate (may tear), then FIFO
+	for (const VkPresentModeKHR PreferredPresentMode : { VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR })
+	{
+		if (std::ranges::find(presentationModes, PreferredPresentMode) != presentationModes.end())
+		{
+			return PreferredPresentMode;
+		}
+	}
 	return VK_PRESENT_MODE_FIFO_KHR;
 }
 

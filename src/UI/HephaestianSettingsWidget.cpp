@@ -129,6 +129,12 @@ void HephaestianSettingsWidget::drawEnvironmentSection()
 	{
 		m_SettingsManager.modifySettings([ShowInfiniteGrid](HephaestianSettings& Settings) { Settings.m_ShowInfiniteGrid = ShowInfiniteGrid; });
 	}
+	ImGui::SameLine();
+	bool IsVerticalSyncEnabled = CurrentSettings.m_IsVerticalSyncEnabled;
+	if (ImGui::Checkbox("Vertical sync", &IsVerticalSyncEnabled))
+	{
+		m_SettingsManager.modifySettings([IsVerticalSyncEnabled](HephaestianSettings& Settings) { Settings.m_IsVerticalSyncEnabled = IsVerticalSyncEnabled; });
+	}
 
 	// Dragging a colour or a position changes it every frame: apply live, but hold off on writing the file until released
 	auto applyContinuousSettingsEdit = [this](const std::function<void(HephaestianSettings&)>& EditToApply)

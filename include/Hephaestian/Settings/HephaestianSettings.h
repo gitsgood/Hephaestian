@@ -16,6 +16,7 @@ namespace Hephaestian
 struct HephaestianSettings
 {
 	bool m_ShowInfiniteGrid{ true };
+	bool m_IsVerticalSyncEnabled{ false };	// One frame per display refresh (less power and heat) instead of as many as possible
 	std::array<float, 3> m_BackgroundClearColour{ 0.6f, 0.65f, 0.4f };	// RGB, 0 to 1. A plain array so the JSON stays a readable [r, g, b]
 
 	// The scene's one point light. The further away it is, the more it behaves like the sun (parallel light over the whole scene).
@@ -52,6 +53,7 @@ struct glz::meta<Hephaestian::HephaestianSettings>
 	using T = Hephaestian::HephaestianSettings;
 	static constexpr auto value = glz::object(
 		"showInfiniteGrid", &T::m_ShowInfiniteGrid,
+		"verticalSync", &T::m_IsVerticalSyncEnabled,
 		"backgroundClearColour", &T::m_BackgroundClearColour,
 		"lightPosition", &T::m_LightWorldPosition,
 		"lightColour", &T::m_LightColour,

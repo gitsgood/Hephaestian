@@ -107,7 +107,12 @@ auto main(int ArgumentCount, char** Arguments) -> int
 	const SettingsChangeSubscription RendererSettingsSubscription = SettingsManager.subscribeToSettingsChanges(
 		[](const HephaestianSettings& NewSettings, const HephaestianSettings& PreviousSettings)
 		{
-			renderer.setInfiniteGridVisible(NewSettings.m_ShowInfiniteGrid);	// Also runs once right now, applying the loaded value
+			renderer.setInfiniteGridVisible(NewSettings.m_ShowInfiniteGrid);	// Also runs once right now, applying the loaded values
+			renderer.setVerticalSyncEnabled(NewSettings.m_IsVerticalSyncEnabled);	// Rebuilds the swapchain on the next frame if it changed
+			if (NewSettings.m_IsVerticalSyncEnabled != PreviousSettings.m_IsVerticalSyncEnabled)
+			{
+				LOG("Vertical sync {}", NewSettings.m_IsVerticalSyncEnabled ? "on" : "off");
+			}
 			if (NewSettings.m_ShowInfiniteGrid != PreviousSettings.m_ShowInfiniteGrid)
 			{
 				LOG("Infinite grid {}", NewSettings.m_ShowInfiniteGrid ? "shown" : "hidden");

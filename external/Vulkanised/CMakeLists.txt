@@ -50,6 +50,7 @@ set(SOURCES
     include/Vulkanised/Rendering/FrustumCulling.h
     include/Vulkanised/Rendering/GpuInstanceData.h
     src/Rendering/InstancePreparation.cpp
+    src/Rendering/PipelineCache.cpp
     include/Vulkanised/Vertex.h
     include/Vulkanised/Mesh.h
 )

@@ -1,5 +1,6 @@
 {
    "showInfiniteGrid": true,
+   "verticalSync": false,
    "backgroundClearColour": [
       0.0,
       0.0,
