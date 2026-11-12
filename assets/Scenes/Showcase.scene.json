@@ -26,6 +26,7 @@
          "id": "Floor",
          "primitive": "quad",
          "texture": "Panda",
+         "position": [0, 0.01, 0],
          "scale": [8, 1, 8]
       },
       {
