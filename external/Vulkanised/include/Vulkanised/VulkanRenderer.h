@@ -96,6 +96,12 @@ public:
 	[[nodiscard]] Rendering::GpuMemoryStatistics getGpuMemoryStatistics() const { return m_GpuMemory.getStatistics(); }
 	[[nodiscard]] std::string_view getGpuName() const noexcept { return m_PhysicalDeviceProperties.deviceName; }
 
+	// - Frustum culling (on by default). Frozen = keep culling against the frustum of the moment it was frozen.
+	void setFrustumCullingEnabled(bool ShouldCull) noexcept { m_IsFrustumCullingEnabled = ShouldCull; }
+	[[nodiscard]] bool isFrustumCullingEnabled() const noexcept { return m_IsFrustumCullingEnabled; }
+	void setFrustumCullingFrozen(bool ShouldFreeze) noexcept { m_IsFrustumCullingFrozen = ShouldFreeze; }
+	[[nodiscard]] bool isFrustumCullingFrozen() const noexcept { return m_IsFrustumCullingFrozen; }
+
 	void cleanup() noexcept;
 
 	~VulkanRenderer();
@@ -103,7 +109,8 @@ public:
 private:
 	// ECS OVERHAUL
 	// Limits
-	static constexpr uint32_t MAX_INSTANCES = 100000;
+	static constexpr uint32_t c_InitialInstanceCapacity{ 16384 };		// Per frame; doubles whenever a frame needs more
+	static constexpr uint32_t c_InitialIndirectCommandCapacity{ 1024 };	// One per drawn mesh
 	static constexpr VkDeviceSize UNIFIED_BUFFER_SIZE = 64 * 1024 * 1024; // 64 MB for geometry to start with, the buffers grow (doubling) when a mesh doesn't fit
 
 	// Asset Storage
@@ -268,7 +275,18 @@ private:
 	[[nodiscard]] bool doesSwapchainNeedRecreation() const;
 
 	// - Record functions
-	void recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, const std::vector<RenderInstance>& instances);
+	void recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, uint32_t IndirectCommandCount);
+
+	// Culling, grouping by mesh, instance data and indirect draws (src/Rendering/InstancePreparation.cpp)
+	uint32_t prepareFrameInstances(Rendering::FrameResources& FrameToFill, const std::vector<RenderInstance>& SubmittedInstances);
+	void ensureFrameBufferCapacity(Rendering::FrameResources& FrameToGrow, uint32_t RequiredInstanceCount, uint32_t RequiredIndirectCommandCount);
+	bool m_IsFrustumCullingEnabled{ true };
+	bool m_IsFrustumCullingFrozen{ false };
+	glm::mat4 m_CullingViewProjection{ 1.0f };
+	bool m_HasWarnedAboutInvalidRenderInstances{ false };
+	std::vector<uint32_t> m_VisibleInstanceIndices;			// Reused every frame (no allocations once warmed up)
+	std::vector<uint32_t> m_VisibleInstanceCountPerMesh;
+	std::vector<uint32_t> m_InstanceWriteCursorPerMesh;
 
 	// - Get functions
 	void getPhysicalDevice();

@@ -197,7 +197,20 @@ void HephaestianSettingsWidget::drawRendererStatisticsSection()
 	}
 
 	ImGui::Text("Instances: %u submitted, %u culled, %u drawn", Statistics.m_SubmittedInstanceCount, Statistics.m_CulledInstanceCount, Statistics.m_DrawnInstanceCount);
-	ImGui::Text("Draw calls: %u", Statistics.m_DrawCallCount);
+	ImGui::Text("Indirect draws: %u (one per visible mesh, all in one call)", Statistics.m_DrawCallCount);
+
+	// Debug toggles, not saved: culling on/off, and freezing it (fly out and see what the frozen camera keeps)
+	bool IsFrustumCullingEnabled = m_Renderer.isFrustumCullingEnabled();
+	if (ImGui::Checkbox("Frustum culling", &IsFrustumCullingEnabled))
+	{
+		m_Renderer.setFrustumCullingEnabled(IsFrustumCullingEnabled);
+	}
+	ImGui::SameLine();
+	bool IsFrustumCullingFrozen = m_Renderer.isFrustumCullingFrozen();
+	if (ImGui::Checkbox("Freeze culling", &IsFrustumCullingFrozen))
+	{
+		m_Renderer.setFrustumCullingFrozen(IsFrustumCullingFrozen);
+	}
 
 	constexpr double c_BytesPerMegabyte{ 1024.0 * 1024.0 };
 	const Vulkanised::Rendering::GpuMemoryStatistics MemoryStatistics = m_Renderer.getGpuMemoryStatistics();

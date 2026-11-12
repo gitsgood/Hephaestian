@@ -20,13 +20,21 @@ namespace Vulkanised
         uint32_t indexCount;
         int32_t vertexOffset;
         int texId;
+
+        // Smallest-ish sphere around every vertex (centred on their bounding box), in the mesh's own space: frustum culling
+        // transforms it with each instance and skips the instance when the sphere is entirely out of view
+        glm::vec3 m_BoundingSphereCentre{ 0.0f };
+        float m_BoundingSphereRadius{ 0.0f };
     };
 
-    // The Payload your ECS systems will build and pass to the renderer
+    // The Payload your ECS systems will build and pass to the renderer.
+    // Everything after the transform is optional: {mesh, texture, transform} still draws the whole texture, untinted.
     struct RenderInstance {
         uint32_t meshID;
         uint32_t textureID;
         glm::mat4 transform;
+        glm::vec4 m_TextureCoordinateRect{ 0.0f, 0.0f, 1.0f, 1.0f };   // (offset u, offset v, scale u, scale v): a sprite sheet frame, or the whole texture
+        glm::vec4 m_Tint{ 1.0f };                                       // Multiplies the texture colour (linear RGB, alpha unused for now)
     };
 
     // MULTI-MESH MODELS

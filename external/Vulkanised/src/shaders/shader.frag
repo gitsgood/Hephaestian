@@ -9,16 +9,14 @@ layout(binding = 0) uniform UboViewProjection {
     vec4 lightColor;
 } ubo;
 
-// Every texture, in one array (bindless): the draw says which one through a push constant
+// Every texture, in one array (bindless): each instance says which one
 layout(set = 1, binding = 0) uniform sampler2D Textures[];
-layout(push_constant) uniform DrawPushConstants {
-    uint TextureIndex;
-} DrawConstants;
 
 layout(location = 0) in vec3 fragPos;
 layout(location = 1) in vec3 fragColor;
 layout(location = 2) in vec2 fragTexCoord;
 layout(location = 3) in vec3 fragNormal;
+layout(location = 4) flat in uint fragTextureIndex;	// Per instance (may differ between instances of one draw: hence nonuniformEXT)
 
 layout(location = 0) out vec4 outColour;
 
@@ -44,7 +42,7 @@ void main()
     vec3 specular = specularStrength * spec * ubo.lightColor.xyz;
 
     // Combine
-    vec3 texColor = texture(Textures[nonuniformEXT(DrawConstants.TextureIndex)], fragTexCoord).rgb;
+    vec3 texColor = texture(Textures[nonuniformEXT(fragTextureIndex)], fragTexCoord).rgb;
     vec3 finalLight = (ambient + diffuse + specular);
     vec3 result = finalLight * texColor * fragColor;
     

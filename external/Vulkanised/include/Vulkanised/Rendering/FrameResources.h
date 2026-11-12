@@ -22,7 +22,10 @@ struct FrameResources
 	VkFence m_InFlightFence{ VK_NULL_HANDLE };						// Signalled when the GPU is done with everything below
 	VkSemaphore m_SwapchainImageAvailableSemaphore{ VK_NULL_HANDLE };	// Signalled by vkAcquireNextImageKHR
 
-	AllocatedBuffer m_InstanceBuffer;								// Per-instance data (transforms), persistently mapped
+	AllocatedBuffer m_InstanceBuffer;								// Per-instance data (GpuInstanceData), persistently mapped
+	uint32_t m_InstanceCapacity{ 0 };								// How many instances it holds (grows when a frame needs more)
+	AllocatedBuffer m_IndirectCommandBuffer;						// One VkDrawIndexedIndirectCommand per drawn mesh, persistently mapped
+	uint32_t m_IndirectCommandCapacity{ 0 };
 	AllocatedBuffer m_CameraUniformBuffer;							// Camera and light, persistently mapped
 	VkDescriptorSet m_FrameDescriptorSet{ VK_NULL_HANDLE };		// Set 0: the two buffers above
 

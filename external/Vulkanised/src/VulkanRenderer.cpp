@@ -103,12 +103,30 @@ uint32_t Vulkanised::VulkanRenderer::loadMesh(const std::vector<Vertex>& vertice
 	m_ResourceUploader.queueBufferUpload(vertices.data(), vertexSize, m_GlobalVertexBuffer.m_Buffer, static_cast<VkDeviceSize>(m_CurrentVertexOffset) * sizeof(Vertex));
 	m_ResourceUploader.queueBufferUpload(indices.data(), indexSize, m_GlobalIndexBuffer.m_Buffer, static_cast<VkDeviceSize>(m_CurrentIndexOffset) * sizeof(uint32_t));
 
-	// 4. Save the Asset Descriptor
+	// 4. Save the Asset Descriptor, with a bounding sphere for frustum culling: centred on the vertices' bounding box,
+	//    reaching the farthest vertex (not the tightest sphere possible, but close, and one pass over the vertices)
+	glm::vec3 BoundingBoxMinimum{ vertices.front().pos };
+	glm::vec3 BoundingBoxMaximum{ vertices.front().pos };
+	for (const Vertex& CurrentVertex : vertices)
+	{
+		BoundingBoxMinimum = glm::min(BoundingBoxMinimum, CurrentVertex.pos);
+		BoundingBoxMaximum = glm::max(BoundingBoxMaximum, CurrentVertex.pos);
+	}
+	const glm::vec3 BoundingSphereCentre = (BoundingBoxMinimum + BoundingBoxMaximum) * 0.5f;
+	float LargestSquaredDistanceFromCentre{ 0.0f };
+	for (const Vertex& CurrentVertex : vertices)
+	{
+		const glm::vec3 OffsetFromCentre = CurrentVertex.pos - BoundingSphereCentre;
+		LargestSquaredDistanceFromCentre = std::max(LargestSquaredDistanceFromCentre, glm::dot(OffsetFromCentre, OffsetFromCentre));
+	}
+
 	MeshAsset asset{};
 	asset.firstIndex = m_CurrentIndexOffset;
 	asset.indexCount = static_cast<uint32_t>(indices.size());
 	asset.vertexOffset = m_CurrentVertexOffset;
 	asset.texId = texId;
+	asset.m_BoundingSphereCentre = BoundingSphereCentre;
+	asset.m_BoundingSphereRadius = std::sqrt(LargestSquaredDistanceFromCentre);
 	m_Meshes.push_back(asset);
 
 	// 5. Advance Offsets
@@ -171,41 +189,18 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	// Everything loaded since the last frame goes to the GPU now, in one batch, ahead of this frame on the same queue
 	m_ResourceUploader.submitPendingUploads();
 
-	// 1. Sort the incoming ECS payload to maximize batching (Group by Mesh, then Texture)
-	std::vector<RenderInstance> sortedInstances = instances;
-
-	// The SSBO only has room for MAX_INSTANCES transforms. Multi-mesh models multiply the instance count, so guard it.
-	if (sortedInstances.size() > MAX_INSTANCES)
-	{
-		LOGW("{} render instances submitted, but only {} fit in the instance buffer. Dropping the rest.", sortedInstances.size(), MAX_INSTANCES);
-		sortedInstances.resize(MAX_INSTANCES);
-	}
-
-	std::sort(sortedInstances.begin(), sortedInstances.end(), [](const RenderInstance& a, const RenderInstance& b) {
-		if (a.meshID != b.meshID) return a.meshID < b.meshID;
-		return a.textureID < b.textureID;
-		});
-
-	// 2. Write every transform into this frame's (persistently mapped) instance buffer
-	glm::mat4* InstanceTransforms = static_cast<glm::mat4*>(CurrentFrame.m_InstanceBuffer.m_MappedData);
-	for (size_t CurrentInstanceIndex{ 0 }; CurrentInstanceIndex < sortedInstances.size(); ++CurrentInstanceIndex)
-	{
-		InstanceTransforms[CurrentInstanceIndex] = sortedInstances[CurrentInstanceIndex].transform;
-	}
-	m_GpuMemory.flushBufferWrites(CurrentFrame.m_InstanceBuffer, 0, sizeof(glm::mat4) * std::max<size_t>(sortedInstances.size(), 1));
-	m_FrameStatistics.m_SubmittedInstanceCount = static_cast<uint32_t>(instances.size());
-	m_FrameStatistics.m_DrawnInstanceCount = static_cast<uint32_t>(sortedInstances.size());
-	m_FrameStatistics.m_CulledInstanceCount = 0;
-
-	// 3. Camera and light
+	// 1. Camera and light (first: culling needs this frame's view and projection)
 	updateProjectionMatrixFromCameraLens();	// Cheap, and keeps the aspect ratio right after any resize
 	memcpy(CurrentFrame.m_CameraUniformBuffer.m_MappedData, &m_UboViewProjection, sizeof(UboViewProjection));
 	m_GpuMemory.flushBufferWrites(CurrentFrame.m_CameraUniformBuffer);
 
+	// 2-3. Cull, group by mesh, write the instance data and the indirect draws straight into this frame's buffers
+	const uint32_t IndirectCommandCount = prepareFrameInstances(CurrentFrame, instances);
+
 	// 4. Record. The whole pool is reset at once (cheaper than resetting the buffer on its own).
 	vkResetCommandPool(m_MainDevice.logicalDevice, CurrentFrame.m_CommandPool, 0);
 	prepareScreenshotBufferIfRequested();	// A screenshot was asked for: this frame also copies its finished image into a CPU-readable buffer
-	recordCommands(CurrentFrame, SwapchainImageIndex, sortedInstances);
+	recordCommands(CurrentFrame, SwapchainImageIndex, IndirectCommandCount);
 
 	// 5. Submit (synchronization2): wait for the image to be available before writing colour, then signal this image's
 	//    render-finished semaphore once every command is done, and the frame's fence
@@ -335,9 +330,8 @@ void Vulkanised::VulkanRenderer::createFrameResources()
 			LOGNTHROW("Failed to create a frame's fence or semaphore");
 		}
 
-		// Persistently mapped, written straight into every frame
-		CurrentFrame.m_InstanceBuffer = m_GpuMemory.createBuffer(sizeof(glm::mat4) * MAX_INSTANCES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-			Rendering::GpuMemoryUsage::CpuWritesGpuReads, "Instance data (frame " + std::to_string(CurrentFrameIndex) + ")");
+		// Per-frame instance data and indirect commands, persistently mapped. Start small, grow when a frame needs more.
+		ensureFrameBufferCapacity(CurrentFrame, c_InitialInstanceCapacity, c_InitialIndirectCommandCapacity);
 		CurrentFrame.m_CameraUniformBuffer = m_GpuMemory.createBuffer(sizeof(UboViewProjection), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			Rendering::GpuMemoryUsage::CpuWritesGpuReads, "Camera and light (frame " + std::to_string(CurrentFrameIndex) + ")");
 
@@ -391,6 +385,7 @@ void Vulkanised::VulkanRenderer::destroyFrameResources() noexcept
 		vkDestroyQueryPool(m_MainDevice.logicalDevice, CurrentFrame.m_TimestampQueryPool, nullptr);
 		m_GpuMemory.destroyBuffer(CurrentFrame.m_CameraUniformBuffer);
 		m_GpuMemory.destroyBuffer(CurrentFrame.m_InstanceBuffer);
+		m_GpuMemory.destroyBuffer(CurrentFrame.m_IndirectCommandBuffer);
 		vkDestroySemaphore(m_MainDevice.logicalDevice, CurrentFrame.m_SwapchainImageAvailableSemaphore, nullptr);
 		vkDestroyFence(m_MainDevice.logicalDevice, CurrentFrame.m_InFlightFence, nullptr);
 		vkDestroyCommandPool(m_MainDevice.logicalDevice, CurrentFrame.m_CommandPool, nullptr);
@@ -1487,16 +1482,15 @@ void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 	colourBlendingCreateInfo.pAttachments = &colourState;
 
 	// -- PIPELINE LAYOUT --
-	std::array<VkDescriptorSetLayout, 2> descriptorSetLayouts = { m_DescriptorSetLayout, m_BindlessTextureSetLayout };
-	// Which texture of the bindless array a draw samples (4 bytes, pushed per draw)
-	const VkPushConstantRange TextureIndexPushConstantRange{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t) };
+	// Set 0: this frame's camera + instance data. Set 1: every texture (bindless).
+	const std::array<VkDescriptorSetLayout, 2> descriptorSetLayouts = { m_DescriptorSetLayout, m_BindlessTextureSetLayout };
 
 	VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
 	pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
 	pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
-	pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
-	pipelineLayoutCreateInfo.pPushConstantRanges = &TextureIndexPushConstantRange;
+	pipelineLayoutCreateInfo.pushConstantRangeCount = 0;	// Everything per draw lives in the instance data now (texture index included)
+	pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
 
 	// Create pipeline layout
 	if (vkCreatePipelineLayout(m_MainDevice.logicalDevice, &pipelineLayoutCreateInfo, nullptr, &m_PipelineLayout) != VK_SUCCESS)
@@ -1815,7 +1809,7 @@ bool Vulkanised::VulkanRenderer::doesSwapchainNeedRecreation() const
 	return static_cast<uint32_t>(FramebufferWidth) != m_SwapchainExtent.width || static_cast<uint32_t>(FramebufferHeight) != m_SwapchainExtent.height;
 }
 
-void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, const std::vector<RenderInstance>& instances)
+void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, uint32_t IndirectCommandCount)
 {
 	const VkCommandBuffer CommandBuffer = FrameToRecord.m_CommandBuffer;
 	const VkImage SwapchainImage = m_SwapchainImages[SwapchainImageIndex].m_Image;
@@ -1906,51 +1900,11 @@ void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& Frame
 	const std::array<VkDescriptorSet, 2> FrameDescriptorSets{ FrameToRecord.m_FrameDescriptorSet, m_BindlessTextureSet };
 	vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, static_cast<uint32_t>(FrameDescriptorSets.size()), FrameDescriptorSets.data(), 0, nullptr);
 
-	// INSTANCED RENDERING BATCH LOOP
-	m_FrameStatistics.m_DrawCallCount = 0;
-	size_t firstInstance = 0;
-	while (firstInstance < instances.size())
+	// THE WHOLE SCENE IN ONE CALL: one indirect command per mesh (prepareFrameInstances wrote them), each drawing all of that
+	// mesh's visible instances. The GPU reads the commands from this frame's indirect buffer.
+	if (IndirectCommandCount > 0)
 	{
-		uint32_t currentMesh = instances[firstInstance].meshID;
-		uint32_t currentTex = instances[firstInstance].textureID;
-
-		// Count how many consecutive identical instances we have
-		uint32_t instanceCount = 0;
-		while (firstInstance + instanceCount < instances.size() &&
-			instances[firstInstance + instanceCount].meshID == currentMesh &&
-			instances[firstInstance + instanceCount].textureID == currentTex)
-		{
-			instanceCount++;
-		}
-
-		// --- SAFETY GUARDS ---
-		// If the ECS passed a garbage Mesh ID or an aborted asset, skip this entire batch!
-		if (currentMesh >= m_Meshes.size())
-		{
-			LOGW("Invalid mesh ID {} requested for render. Skipping batch.", currentMesh);
-			firstInstance += instanceCount;
-			continue;
-		}
-
-		// Same for textures!
-		if (currentTex >= m_TextureCount)
-		{
-			LOGW("Invalid texture ID {} requested for render. Skipping batch.", currentTex);
-			firstInstance += instanceCount;
-			continue;
-		}
-		// -----------------------------
-
-		// The texture is picked by index inside the shader (bindless): no descriptor set to switch, just a push constant
-		vkCmdPushConstants(CommandBuffer, m_PipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t), &currentTex);
-
-		// Execute Instanced Draw!
-		MeshAsset& asset = m_Meshes[currentMesh];
-		vkCmdDrawIndexed(CommandBuffer, asset.indexCount, instanceCount, asset.firstIndex, asset.vertexOffset, static_cast<uint32_t>(firstInstance));
-		++m_FrameStatistics.m_DrawCallCount;
-
-		// Advance to next batch
-		firstInstance += instanceCount;
+		vkCmdDrawIndexedIndirect(CommandBuffer, FrameToRecord.m_IndirectCommandBuffer.m_Buffer, 0, IndirectCommandCount, sizeof(VkDrawIndexedIndirectCommand));
 	}
 
 	vkCmdEndRendering(CommandBuffer);
