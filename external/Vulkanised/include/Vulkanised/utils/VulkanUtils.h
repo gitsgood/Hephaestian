@@ -11,7 +11,7 @@ namespace Vulkanised::Utilities::Vulkan
 {
 
     inline constexpr int c_MaxFrameDraws{ 2 };
-    inline constexpr uint32_t c_MaxTextures{ 4096 };   // Size of the texture (sampler) descriptor pool. Imported models bring a LOT of textures.
+    inline constexpr uint32_t c_MaxBindlessTextures{ 16384 };   // Size of the one texture array every shader indexes into (clamped to what the GPU allows)
 
     // using inline so header-only definition doesn't produce duplicate symbols when included from multiple translation units (TUs).
     inline const std::vector<const char*> validationLayers = { "VK_LAYER_KHRONOS_validation" };

@@ -141,7 +141,7 @@ foreach(SHADER ${SHADER_FILES})
 
     add_custom_command(
         OUTPUT ${OUTPUT_SPV}
-        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${SHADER}" -o "${OUTPUT_SPV}"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" --target-env=vulkan1.3 "${SHADER}" -o "${OUTPUT_SPV}"
         DEPENDS ${SHADER}
         COMMENT "Compiling ${FILE_NAME} to SPIR-V"
         VERBATIM
@@ -156,7 +156,7 @@ foreach(SHADER ${SHADER_FILES})
 
     add_custom_command(
         OUTPUT ${HEADER_PATH}
-        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" "${SHADER}" -mfmt=c -o "${HEADER_PATH}"
+        COMMAND "${Vulkan_GLSLC_EXECUTABLE}" --target-env=vulkan1.3 "${SHADER}" -mfmt=c -o "${HEADER_PATH}"
         DEPENDS ${SHADER}
         COMMENT "Generating embedded header ${HEADER_NAME}"
         VERBATIM

@@ -681,7 +681,7 @@ uint32_t Vulkanised::VulkanRenderer::createModel(const std::vector<ModelSubmesh>
 			LOGW("Model submesh references mesh {}, which does not exist. Skipping that submesh.", CurrentSubmesh.m_MeshIdentifier);
 			continue;
 		}
-		if (CurrentSubmesh.m_TextureIdentifier >= m_SamplerDescriptorSets.size())
+		if (CurrentSubmesh.m_TextureIdentifier >= m_TextureCount)
 		{
 			LOGW("Model submesh references texture {}, which does not exist. Skipping that submesh.", CurrentSubmesh.m_TextureIdentifier);
 			continue;
@@ -777,15 +777,15 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 	// ImGui owns Vulkan objects of its own (pipeline, font texture, descriptor pool), so it goes before the device does
 	shutdownImGui();
 
-	if (m_SamplerDescriptorPool != VK_NULL_HANDLE)
+	if (m_BindlessTexturePool != VK_NULL_HANDLE)
 	{
-		vkDestroyDescriptorPool(m_MainDevice.logicalDevice, m_SamplerDescriptorPool, nullptr);
-		m_SamplerDescriptorPool = VK_NULL_HANDLE;
+		vkDestroyDescriptorPool(m_MainDevice.logicalDevice, m_BindlessTexturePool, nullptr);
+		m_BindlessTexturePool = VK_NULL_HANDLE;
 	}
-	if (m_SamplerSetLayout != VK_NULL_HANDLE)
+	if (m_BindlessTextureSetLayout != VK_NULL_HANDLE)
 	{
-		vkDestroyDescriptorSetLayout(m_MainDevice.logicalDevice, m_SamplerSetLayout, nullptr);
-		m_SamplerSetLayout = VK_NULL_HANDLE;
+		vkDestroyDescriptorSetLayout(m_MainDevice.logicalDevice, m_BindlessTextureSetLayout, nullptr);
+		m_BindlessTextureSetLayout = VK_NULL_HANDLE;
 	}
 	for (VkSampler* CurrentSampler : { &m_SmoothTextureSampler, &m_PixelatedTextureSampler })
 	{
@@ -1079,6 +1079,7 @@ void Vulkanised::VulkanRenderer::createLogicalDevice()
 	EnabledVulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 	EnabledVulkan13Features.dynamicRendering = VK_TRUE;
 	EnabledVulkan13Features.synchronization2 = VK_TRUE;
+	EnabledVulkan13Features.shaderDemoteToHelperInvocation = VK_TRUE;	// "discard" compiles to this with SPIR-V 1.6 (required on every 1.3 GPU)
 
 	// - Vulkan 1.2: descriptor indexing, so every texture can live in one big array the shaders index into ("bindless")
 	VkPhysicalDeviceVulkan12Features EnabledVulkan12Features{};
@@ -1305,21 +1306,42 @@ void Vulkanised::VulkanRenderer::createDescriptorSetLayout()
 		LOGNTHROW("failed to create descriptor set layout!");
 	}
 
-	// (Keep the Texture Sampler Layout creation exactly as it was)
-	VkDescriptorSetLayoutBinding samplerLayoutBinding = {};
-	samplerLayoutBinding.binding = 0;
-	samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	samplerLayoutBinding.descriptorCount = 1;
-	samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	// SET 1: EVERY TEXTURE, in one big array the shaders index into ("bindless"). A texture identifier IS its index here.
+	// - Partially bound: slots no texture was written to yet are fine, as long as nothing samples them
+	// - Update after bind: new textures can be written while frames in flight still use the set (loading during gameplay)
+	VkPhysicalDeviceVulkan12Properties Vulkan12Properties{};
+	Vulkan12Properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;
+	VkPhysicalDeviceProperties2 DeviceProperties{};
+	DeviceProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	DeviceProperties.pNext = &Vulkan12Properties;
+	vkGetPhysicalDeviceProperties2(m_MainDevice.physicalDevice, &DeviceProperties);
+	// A combined image sampler counts as a sampled image AND a sampler
+	m_BindlessTextureCapacity = std::min({ Utilities::Vulkan::c_MaxBindlessTextures,
+		Vulkan12Properties.maxDescriptorSetUpdateAfterBindSampledImages, Vulkan12Properties.maxPerStageDescriptorUpdateAfterBindSampledImages,
+		Vulkan12Properties.maxDescriptorSetUpdateAfterBindSamplers, Vulkan12Properties.maxPerStageDescriptorUpdateAfterBindSamplers });
 
-	VkDescriptorSetLayoutCreateInfo textureLayoutCreateInfo = {};
-	textureLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	textureLayoutCreateInfo.bindingCount = 1;
-	textureLayoutCreateInfo.pBindings = &samplerLayoutBinding;
+	VkDescriptorSetLayoutBinding BindlessTexturesBinding{};
+	BindlessTexturesBinding.binding = 0;
+	BindlessTexturesBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	BindlessTexturesBinding.descriptorCount = m_BindlessTextureCapacity;
+	BindlessTexturesBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	if (vkCreateDescriptorSetLayout(m_MainDevice.logicalDevice, &textureLayoutCreateInfo, nullptr, &m_SamplerSetLayout) != VK_SUCCESS)
+	constexpr VkDescriptorBindingFlags c_BindlessTexturesBindingFlags{ VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT };
+	VkDescriptorSetLayoutBindingFlagsCreateInfo BindingFlagsCreateInfo{};
+	BindingFlagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+	BindingFlagsCreateInfo.bindingCount = 1;
+	BindingFlagsCreateInfo.pBindingFlags = &c_BindlessTexturesBindingFlags;
+
+	VkDescriptorSetLayoutCreateInfo BindlessLayoutCreateInfo{};
+	BindlessLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	BindlessLayoutCreateInfo.pNext = &BindingFlagsCreateInfo;
+	BindlessLayoutCreateInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+	BindlessLayoutCreateInfo.bindingCount = 1;
+	BindlessLayoutCreateInfo.pBindings = &BindlessTexturesBinding;
+
+	if (vkCreateDescriptorSetLayout(m_MainDevice.logicalDevice, &BindlessLayoutCreateInfo, nullptr, &m_BindlessTextureSetLayout) != VK_SUCCESS)
 	{
-		LOGNTHROW("Failed to create a Descriptor Set Layout!");
+		LOGNTHROW("Failed to create the bindless texture descriptor set layout");
 	}
 }
 
@@ -1465,14 +1487,16 @@ void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 	colourBlendingCreateInfo.pAttachments = &colourState;
 
 	// -- PIPELINE LAYOUT --
-	std::array<VkDescriptorSetLayout, 2> descriptorSetLayouts = { m_DescriptorSetLayout, m_SamplerSetLayout };
+	std::array<VkDescriptorSetLayout, 2> descriptorSetLayouts = { m_DescriptorSetLayout, m_BindlessTextureSetLayout };
+	// Which texture of the bindless array a draw samples (4 bytes, pushed per draw)
+	const VkPushConstantRange TextureIndexPushConstantRange{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t) };
 
 	VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo{};
 	pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	pipelineLayoutCreateInfo.setLayoutCount = static_cast<uint32_t>(descriptorSetLayouts.size());
 	pipelineLayoutCreateInfo.pSetLayouts = descriptorSetLayouts.data();
-	pipelineLayoutCreateInfo.pushConstantRangeCount = 0;
-	pipelineLayoutCreateInfo.pPushConstantRanges = nullptr;
+	pipelineLayoutCreateInfo.pushConstantRangeCount = 1;
+	pipelineLayoutCreateInfo.pPushConstantRanges = &TextureIndexPushConstantRange;
 
 	// Create pipeline layout
 	if (vkCreatePipelineLayout(m_MainDevice.logicalDevice, &pipelineLayoutCreateInfo, nullptr, &m_PipelineLayout) != VK_SUCCESS)
@@ -1705,22 +1729,29 @@ void Vulkanised::VulkanRenderer::createDescriptorPool()
 		LOGNTHROW("failed to create the uniform descriptor pool");
 	}
 
-	// CREATE SAMPLER DESCRIPTOR POOL
-	// Texture sampler pool
-	VkDescriptorPoolSize samplerPoolSize = {};
-	samplerPoolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	samplerPoolSize.descriptorCount = Utilities::Vulkan::c_MaxTextures;
-
-	VkDescriptorPoolCreateInfo samplerPoolCreateInfo = {};
-	samplerPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	samplerPoolCreateInfo.maxSets = Utilities::Vulkan::c_MaxTextures;
-	samplerPoolCreateInfo.poolSizeCount = 1;
-	samplerPoolCreateInfo.pPoolSizes = &samplerPoolSize;
-
-	if (vkCreateDescriptorPool(m_MainDevice.logicalDevice, &samplerPoolCreateInfo, nullptr, &m_SamplerDescriptorPool) != VK_SUCCESS)
+	// BINDLESS TEXTURE POOL: exactly one set (every texture), allocated once and only ever added to
+	const VkDescriptorPoolSize BindlessPoolSize{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_BindlessTextureCapacity };
+	VkDescriptorPoolCreateInfo BindlessPoolCreateInfo{};
+	BindlessPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	BindlessPoolCreateInfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+	BindlessPoolCreateInfo.maxSets = 1;
+	BindlessPoolCreateInfo.poolSizeCount = 1;
+	BindlessPoolCreateInfo.pPoolSizes = &BindlessPoolSize;
+	if (vkCreateDescriptorPool(m_MainDevice.logicalDevice, &BindlessPoolCreateInfo, nullptr, &m_BindlessTexturePool) != VK_SUCCESS)
 	{
-		LOGNTHROW("Failed to create a the sampler descriptor Pool!");
+		LOGNTHROW("Failed to create the bindless texture descriptor pool");
 	}
+
+	VkDescriptorSetAllocateInfo BindlessSetAllocateInfo{};
+	BindlessSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	BindlessSetAllocateInfo.descriptorPool = m_BindlessTexturePool;
+	BindlessSetAllocateInfo.descriptorSetCount = 1;
+	BindlessSetAllocateInfo.pSetLayouts = &m_BindlessTextureSetLayout;
+	if (vkAllocateDescriptorSets(m_MainDevice.logicalDevice, &BindlessSetAllocateInfo, &m_BindlessTextureSet) != VK_SUCCESS)
+	{
+		LOGNTHROW("Failed to allocate the bindless texture descriptor set");
+	}
+	LOG("Bindless textures: room for {} in one descriptor set.", m_BindlessTextureCapacity);
 }
 
 void Vulkanised::VulkanRenderer::cleanupSwapchain()
@@ -1871,6 +1902,10 @@ void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& Frame
 	vkCmdBindVertexBuffers(CommandBuffer, 0, 1, vertexBuffers, offsets);
 	vkCmdBindIndexBuffer(CommandBuffer, m_GlobalIndexBuffer.m_Buffer, 0, VK_INDEX_TYPE_UINT32);
 
+	// Both descriptor sets are bound ONCE: this frame's camera + instance data, and every texture there is (bindless)
+	const std::array<VkDescriptorSet, 2> FrameDescriptorSets{ FrameToRecord.m_FrameDescriptorSet, m_BindlessTextureSet };
+	vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, static_cast<uint32_t>(FrameDescriptorSets.size()), FrameDescriptorSets.data(), 0, nullptr);
+
 	// INSTANCED RENDERING BATCH LOOP
 	m_FrameStatistics.m_DrawCallCount = 0;
 	size_t firstInstance = 0;
@@ -1898,7 +1933,7 @@ void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& Frame
 		}
 
 		// Same for textures!
-		if (currentTex >= m_SamplerDescriptorSets.size())
+		if (currentTex >= m_TextureCount)
 		{
 			LOGW("Invalid texture ID {} requested for render. Skipping batch.", currentTex);
 			firstInstance += instanceCount;
@@ -1906,9 +1941,8 @@ void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& Frame
 		}
 		// -----------------------------
 
-		// Bind Descriptor Sets for this batch
-		std::array<VkDescriptorSet, 2> descriptorSetGroup = { FrameToRecord.m_FrameDescriptorSet, m_SamplerDescriptorSets[currentTex] };
-		vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, static_cast<uint32_t>(descriptorSetGroup.size()), descriptorSetGroup.data(), 0, nullptr);
+		// The texture is picked by index inside the shader (bindless): no descriptor set to switch, just a push constant
+		vkCmdPushConstants(CommandBuffer, m_PipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t), &currentTex);
 
 		// Execute Instanced Draw!
 		MeshAsset& asset = m_Meshes[currentMesh];
@@ -2183,7 +2217,7 @@ bool Vulkanised::VulkanRenderer::checkDeviceSuitable(VkPhysicalDevice device)
 		&& SupportedVulkan12Features.descriptorIndexing && SupportedVulkan12Features.runtimeDescriptorArray && SupportedVulkan12Features.descriptorBindingPartiallyBound
 		&& SupportedVulkan12Features.descriptorBindingSampledImageUpdateAfterBind && SupportedVulkan12Features.descriptorBindingVariableDescriptorCount
 		&& SupportedVulkan12Features.shaderSampledImageArrayNonUniformIndexing
-		&& SupportedVulkan13Features.dynamicRendering && SupportedVulkan13Features.synchronization2;
+		&& SupportedVulkan13Features.dynamicRendering && SupportedVulkan13Features.synchronization2 && SupportedVulkan13Features.shaderDemoteToHelperInvocation;
 	if (!AreRequiredFeaturesSupported)
 	{
 		return false;
@@ -2644,51 +2678,30 @@ int Vulkanised::VulkanRenderer::createTextureViewAndDescriptorForImage(int Textu
 
 int Vulkanised::VulkanRenderer::createTextureDescriptor(VkImageView textureImage, VkSampler TextureSampler)
 {
-	VkDescriptorSet descriptorSet;
-
-	// Descriptor Set Allocation Info
-	VkDescriptorSetAllocateInfo setAllocInfo = {};
-	setAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	setAllocInfo.descriptorPool = m_SamplerDescriptorPool;
-	setAllocInfo.descriptorSetCount = 1;
-	setAllocInfo.pSetLayouts = &m_SamplerSetLayout;
-
-	if (m_SamplerDescriptorSets.size() >= Utilities::Vulkan::c_MaxTextures)
+	// The texture's identifier is simply the next free slot of the bindless array
+	if (m_TextureCount >= m_BindlessTextureCapacity)
 	{
-		LOGNTHROW("Out of texture slots ({} max). Raise Utilities::Vulkan::c_MaxTextures if this is legit.", Utilities::Vulkan::c_MaxTextures);
+		LOGNTHROW("Out of texture slots ({} max). Raise Utilities::Vulkan::c_MaxBindlessTextures if this is legit.", m_BindlessTextureCapacity);
 	}
 
-	// Allocate Descriptor Sets
-	VkResult result = vkAllocateDescriptorSets(m_MainDevice.logicalDevice, &setAllocInfo, &descriptorSet);
-	if (result != VK_SUCCESS)
-	{
-		throw std::runtime_error("Failed to allocate Texture Descriptor Sets!");
-	}
+	VkDescriptorImageInfo TextureImageInfo{};
+	TextureImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	TextureImageInfo.imageView = textureImage;
+	TextureImageInfo.sampler = TextureSampler;
 
-	// Texture Image Info
-	VkDescriptorImageInfo imageInfo = {};
-	imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;	// Image layout when in use
-	imageInfo.imageView = textureImage;									// Image to bind to set
-	imageInfo.sampler = TextureSampler;									// Sampler to use for set
+	VkWriteDescriptorSet TextureDescriptorWrite{};
+	TextureDescriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	TextureDescriptorWrite.dstSet = m_BindlessTextureSet;
+	TextureDescriptorWrite.dstBinding = 0;
+	TextureDescriptorWrite.dstArrayElement = m_TextureCount;
+	TextureDescriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	TextureDescriptorWrite.descriptorCount = 1;
+	TextureDescriptorWrite.pImageInfo = &TextureImageInfo;
 
-	// Descriptor Write Info
-	VkWriteDescriptorSet descriptorWrite = {};
-	descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrite.dstSet = descriptorSet;
-	descriptorWrite.dstBinding = 0;
-	descriptorWrite.dstArrayElement = 0;
-	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	descriptorWrite.descriptorCount = 1;
-	descriptorWrite.pImageInfo = &imageInfo;
+	// Allowed while frames in flight use the set (update-after-bind): those frames never sample this new slot
+	vkUpdateDescriptorSets(m_MainDevice.logicalDevice, 1, &TextureDescriptorWrite, 0, nullptr);
 
-	// Update new descriptor set
-	vkUpdateDescriptorSets(m_MainDevice.logicalDevice, 1, &descriptorWrite, 0, nullptr);
-
-	// Add descriptor set to list
-	m_SamplerDescriptorSets.push_back(descriptorSet);
-
-	// Return descriptor set location
-	return static_cast<int>(m_SamplerDescriptorSets.size() - 1);
+	return static_cast<int>(m_TextureCount++);
 }
 
 stbi_uc* Vulkanised::VulkanRenderer::loadTextureFile(std::string_view fileName, int* width, int* height, VkDeviceSize* imageSize)

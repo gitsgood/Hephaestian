@@ -213,12 +213,14 @@ private:
 
 	// - Descriptors
 	VkDescriptorSetLayout m_DescriptorSetLayout;
-	VkDescriptorSetLayout m_SamplerSetLayout;
+	VkDescriptorSetLayout m_BindlessTextureSetLayout;	// Set 1: every texture, one array
 	//VkPushConstantRange m_PushConstantRange;
 
 	VkDescriptorPool m_DescriptorPool;			// Set 0 of every frame in flight
-	VkDescriptorPool m_SamplerDescriptorPool;
-	std::vector<VkDescriptorSet> m_SamplerDescriptorSets;
+	VkDescriptorPool m_BindlessTexturePool;
+	VkDescriptorSet m_BindlessTextureSet{ VK_NULL_HANDLE };
+	uint32_t m_BindlessTextureCapacity{ 0 };	// Array size (GPU limits permitting)
+	uint32_t m_TextureCount{ 0 };				// Slots written so far: a texture identifier is its slot
 
 	// - Assets
 	std::vector<Rendering::AllocatedImage> m_TextureImages;
