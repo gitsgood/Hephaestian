@@ -214,20 +214,47 @@ set_property(GLOBAL PROPERTY VULKANISED_COMPILED_SHADER_FILES ${SPV_OUTPUTS})
 set(VULKANISED_ASSETS_PATH "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "Deprecated, use VULKANISED_SOURCE_DIRECTORY")
 
 # vulkanised_deploy_runtime_assets(<executable target>
-#     [ASSET_DIRECTORIES <dir>...]           # each folder is copied to assets/<folder name>/ (e.g. .../Textures -> assets/Textures)
+#     [ASSET_ROOT_DIRECTORIES <dir>...]      # EVERYTHING inside is deployed, no names needed: each sub-folder goes to
+#                                            # assets/<folder name>/, each loose file to assets/<file name>
+#                                            # (e.g. <repo>/assets with Models/ and Engine/ -> assets/Models, assets/Engine)
+#     [ASSET_DIRECTORIES <dir>...]           # single folders, copied to assets/<folder name>/ (e.g. .../Textures -> assets/Textures)
 #     [FILES_NEXT_TO_EXECUTABLE <file>...]   # loose files copied right beside the executable (e.g. the logger settings)
 # )
 # Vulkanised's compiled shaders are always deployed to assets/shaders/.
-# Each deployed asset folder is a MIRROR of its source: the step re-runs whenever a file in it is edited, added, moved or
-# deleted (CONFIGURE_DEPENDS + a fingerprint of the file list), and then rebuilds the folder from scratch, so a file that
-# was removed or moved in the source can't linger next to the executable and keep getting loaded.
+# The deployed assets/ folder is a MIRROR of its sources: the step re-runs whenever a file is edited, added, moved or
+# deleted, or a folder appears or disappears (CONFIGURE_DEPENDS + a fingerprint of everything deployed), and then rebuilds
+# assets/ from scratch, so nothing removed, moved or renamed in the source can linger next to the executable.
+# Two sources deploying the same name (e.g. a Textures folder in both) is a configure error, rather than one silently winning.
 function(vulkanised_deploy_runtime_assets TARGET_NAME)
-    cmake_parse_arguments(PARSE_ARGV 1 DEPLOY "" "" "ASSET_DIRECTORIES;FILES_NEXT_TO_EXECUTABLE")
+    cmake_parse_arguments(PARSE_ARGV 1 DEPLOY "" "" "ASSET_ROOT_DIRECTORIES;ASSET_DIRECTORIES;FILES_NEXT_TO_EXECUTABLE")
 
     set(EXECUTABLE_DIRECTORY "$<TARGET_FILE_DIR:${TARGET_NAME}>")
     set(ASSETS_DESTINATION "${EXECUTABLE_DIRECTORY}/${VULKANISED_RUNTIME_ASSETS_FOLDER_NAME}")
     set(DEPLOY_COMMANDS "")
     set(DEPLOY_DEPENDENCIES "")
+    set(DEPLOYED_ASSET_NAMES "shaders")         # Names already taken inside assets/, to catch two sources clashing
+    set(LOOSE_ASSET_FILES "")
+
+    # 0. Expand the asset roots into their folders and loose files (non-recursive: one level, the rest comes with each folder)
+    foreach(ASSET_ROOT_DIRECTORY ${DEPLOY_ASSET_ROOT_DIRECTORIES})
+        get_filename_component(ABSOLUTE_ASSET_ROOT_DIRECTORY "${ASSET_ROOT_DIRECTORY}" ABSOLUTE)
+        if(NOT IS_DIRECTORY "${ABSOLUTE_ASSET_ROOT_DIRECTORY}")
+            message(FATAL_ERROR "vulkanised_deploy_runtime_assets: asset root directory '${ABSOLUTE_ASSET_ROOT_DIRECTORY}' does not exist")
+        endif()
+        # LIST_DIRECTORIES + CONFIGURE_DEPENDS: a folder added or removed here re-runs CMake by itself on the next build
+        file(GLOB ASSET_ROOT_ELEMENTS LIST_DIRECTORIES true CONFIGURE_DEPENDS "${ABSOLUTE_ASSET_ROOT_DIRECTORY}/*")
+        foreach(ASSET_ROOT_ELEMENT ${ASSET_ROOT_ELEMENTS})
+            if(IS_DIRECTORY "${ASSET_ROOT_ELEMENT}")
+                list(APPEND DEPLOY_ASSET_DIRECTORIES "${ASSET_ROOT_ELEMENT}")
+            else()
+                list(APPEND LOOSE_ASSET_FILES "${ASSET_ROOT_ELEMENT}")
+            endif()
+        endforeach()
+    endforeach()
+
+    # The whole assets/ folder is rebuilt from scratch every time this step runs: that's what makes it a mirror
+    list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E rm -rf "${ASSETS_DESTINATION}")
+    list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E make_directory "${ASSETS_DESTINATION}")
 
     # 1. Vulkanised's own compiled shaders
     get_property(COMPILED_SHADER_FILES GLOBAL PROPERTY VULKANISED_COMPILED_SHADER_FILES)
@@ -242,19 +269,33 @@ function(vulkanised_deploy_runtime_assets TARGET_NAME)
             message(FATAL_ERROR "vulkanised_deploy_runtime_assets: asset directory '${ABSOLUTE_ASSET_DIRECTORY}' does not exist")
         endif()
         get_filename_component(ASSET_FOLDER_NAME "${ABSOLUTE_ASSET_DIRECTORY}" NAME)
+        if("${ASSET_FOLDER_NAME}" IN_LIST DEPLOYED_ASSET_NAMES)
+            message(FATAL_ERROR "vulkanised_deploy_runtime_assets: two sources both want to deploy 'assets/${ASSET_FOLDER_NAME}' (the second is '${ABSOLUTE_ASSET_DIRECTORY}'). Rename one of them.")
+        endif()
+        list(APPEND DEPLOYED_ASSET_NAMES "${ASSET_FOLDER_NAME}")
 
         file(GLOB_RECURSE ASSET_FILES CONFIGURE_DEPENDS "${ABSOLUTE_ASSET_DIRECTORY}/*")
         list(APPEND DEPLOY_DEPENDENCIES ${ASSET_FILES})
-        list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E rm -rf "${ASSETS_DESTINATION}/${ASSET_FOLDER_NAME}")	# Mirror, not merge
         list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E copy_directory "${ABSOLUTE_ASSET_DIRECTORY}" "${ASSETS_DESTINATION}/${ASSET_FOLDER_NAME}")
     endforeach()
 
-    # Deleting a file doesn't make anything "newer", so timestamps alone would never re-run the step. A fingerprint of the
-    # file list in the command does: when the list changes, the command changes, and the build system re-runs it.
-    string(SHA1 DEPLOYED_FILE_LIST_FINGERPRINT "${DEPLOY_DEPENDENCIES}")
+    # 3. Loose files at the top of an asset root
+    foreach(LOOSE_ASSET_FILE ${LOOSE_ASSET_FILES})
+        get_filename_component(LOOSE_ASSET_FILE_NAME "${LOOSE_ASSET_FILE}" NAME)
+        if("${LOOSE_ASSET_FILE_NAME}" IN_LIST DEPLOYED_ASSET_NAMES)
+            message(FATAL_ERROR "vulkanised_deploy_runtime_assets: two sources both want to deploy 'assets/${LOOSE_ASSET_FILE_NAME}' (the second is '${LOOSE_ASSET_FILE}'). Rename one of them.")
+        endif()
+        list(APPEND DEPLOYED_ASSET_NAMES "${LOOSE_ASSET_FILE_NAME}")
+        list(APPEND DEPLOY_DEPENDENCIES "${LOOSE_ASSET_FILE}")
+        list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E copy "${LOOSE_ASSET_FILE}" "${ASSETS_DESTINATION}/${LOOSE_ASSET_FILE_NAME}")
+    endforeach()
+
+    # Deleting a file (or adding an empty folder) doesn't make anything "newer", so timestamps alone would never re-run the
+    # step. A fingerprint of everything deployed, in the command itself, does: when it changes, the build system re-runs it.
+    string(SHA1 DEPLOYED_FILE_LIST_FINGERPRINT "${DEPLOYED_ASSET_NAMES};${DEPLOY_DEPENDENCIES}")
     list(APPEND DEPLOY_COMMANDS COMMAND "${CMAKE_COMMAND}" -E echo "Deployed asset list ${DEPLOYED_FILE_LIST_FINGERPRINT}")
 
-    # 3. Loose files beside the executable
+    # 4. Loose files beside the executable
     foreach(LOOSE_FILE ${DEPLOY_FILES_NEXT_TO_EXECUTABLE})
         get_filename_component(ABSOLUTE_LOOSE_FILE "${LOOSE_FILE}" ABSOLUTE)
         list(APPEND DEPLOY_DEPENDENCIES "${ABSOLUTE_LOOSE_FILE}")
@@ -265,7 +306,6 @@ function(vulkanised_deploy_runtime_assets TARGET_NAME)
     set(DEPLOY_STAMP_FILE "${CMAKE_CURRENT_BINARY_DIR}/${TARGET_NAME}_runtime_assets_$<CONFIG>.stamp")
     add_custom_command(
         OUTPUT "${DEPLOY_STAMP_FILE}"
-        COMMAND "${CMAKE_COMMAND}" -E make_directory "${ASSETS_DESTINATION}"
         ${DEPLOY_COMMANDS}
         COMMAND "${CMAKE_COMMAND}" -E touch "${DEPLOY_STAMP_FILE}"
         DEPENDS ${DEPLOY_DEPENDENCIES}

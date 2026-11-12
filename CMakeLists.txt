@@ -51,9 +51,10 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 # Everything the game needs at runtime is copied to "<exe folder>/assets", and only when something actually changed.
 # Shaders always come along. Add more folders to ASSET_DIRECTORIES as the game gets its own assets (e.g. assets/Models).
 vulkanised_deploy_runtime_assets(${PROJECT_NAME}
+    ASSET_ROOT_DIRECTORIES
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets"                # Every folder/file inside -> assets/<same name> (Models, Engine, ...)
     ASSET_DIRECTORIES
-        "${VULKANISED_SOURCE_DIRECTORY}/Textures"           # -> assets/Textures
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets/Models"         # -> assets/Models (every model in here gets loaded at startup)
+        "${VULKANISED_SOURCE_DIRECTORY}/Textures"           # -> assets/Textures (Vulkanised's test textures, outside our assets folder)
     FILES_NEXT_TO_EXECUTABLE
         "${CMAKE_CURRENT_SOURCE_DIR}/VulkanisedLoggerSettings.json"
         "${CMAKE_CURRENT_SOURCE_DIR}/HephaestianSettings.json"

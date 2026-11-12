@@ -41,6 +41,20 @@ static void initWindow(std::string_view wName = "Test Window", const int width =
 		LOGNTHROW("Failed to create GLFW window");
 	}
 
+	// Sets Hephaestian's icon, courtesy of Martin's Legion
+	GLFWimage icon{};
+	icon.pixels = stbi_load("Assets/Engine/Hephaestos.png", &icon.width, &icon.height, nullptr, 4);
+	if (icon.pixels)
+	{
+		if (glfwGetPlatform() != GLFW_PLATFORM_WAYLAND)
+			glfwSetWindowIcon(rawWindow, 1, &icon);
+		stbi_image_free(icon.pixels);
+	}
+	else
+	{
+		LOGE("Failed to use Hephaestian's icon.");
+	}
+
 	// Wrap it in a shared_ptr with a custom deleter
 	// We pass glfwDestroyWindow as the function to call when the ref count hits 0
 	window = std::shared_ptr<GLFWwindow>(rawWindow, glfwDestroyWindow);
