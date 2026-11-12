@@ -24,6 +24,10 @@
 #include "Mesh.h"
 #include "Rendering/GpuMemory.h"
 #include "Rendering/FrameStatistics.h"
+#include "Rendering/FrameResources.h"
+#include "utils/VulkanUtils.h"
+
+#include <array>
 
 namespace Vulkanised
 {
@@ -114,14 +118,20 @@ private:
 	// Diagnostics
 	Rendering::FrameStatistics m_FrameStatistics;
 	VkPhysicalDeviceProperties m_PhysicalDeviceProperties{};
-	std::vector<VkQueryPool> m_TimestampQueryPools;			// One per frame in flight: [0] = start of the frame's commands, [1] = end
-	std::vector<bool> m_HasTimestampQueriesToRead;			// Whether that frame slot's pool holds results not read yet
 	bool m_CanWriteTimestamps{ false };
 	std::chrono::steady_clock::time_point m_PreviousSubmitFrameStartTime{};
 	bool m_WasPreviousFrameAScreenshotFrame{ false };
-	void createTimestampQueryPools();
-	void readFinishedTimestampQueries(int FrameSlotIndex);
+	void readFinishedTimestampQueries(Rendering::FrameResources& FinishedFrame);
 	void recordFrameStatistic(float& SmoothedValue, float NewValue) const noexcept;
+
+	// Frames in flight: everything the CPU rewrites every frame, one copy per frame the GPU may still be working on
+	std::array<Rendering::FrameResources, Utilities::Vulkan::c_MaxFrameDraws> m_Frames{};
+	void createFrameResources();
+	void destroyFrameResources() noexcept;
+	// One per swapchain image: presenting waits on it, and the image index (not the frame) says when it's free again
+	std::vector<VkSemaphore> m_RenderFinishedSemaphores;
+	void createRenderFinishedSemaphores();
+	void destroyRenderFinishedSemaphores() noexcept;
 
 	// Screenshots
 	std::optional<std::filesystem::path> m_PendingScreenshotFilePath;
@@ -155,21 +165,13 @@ private:
 	void growUnifiedBuffer(Rendering::AllocatedBuffer& BufferToGrow, VkDeviceSize UsedBytesToKeep, VkDeviceSize RequiredCapacityInBytes,
 		VkBufferUsageFlags BufferUsage, std::string_view BufferNameForLogging);
 
-	// SSBO for Instance Transforms (Replaces Push Constants), persistently mapped
-	std::vector<Rendering::AllocatedBuffer> m_SSBO;
-
 	// New internal setup functions
 	void createUnifiedBuffers();
-	void createSSBOs();
-
 
 	// GLFW Window
 	VAtomic<GLFWwindow> m_Window;
 
 	int m_CurrentFrame{ 0 };
-
-	// Scene objects
-
 
 	// Scene settings
 	struct UboViewProjection {
@@ -194,7 +196,6 @@ private:
 	VkSwapchainKHR m_Swapchain;
 	std::vector<Utilities::Vulkan::SwapchainImage> m_SwapchainImages;
 	std::vector<VkFramebuffer> m_SwapchainFramebuffers;
-	std::vector<VkCommandBuffer> m_CommandBuffers;
 
 	Rendering::AllocatedImage m_DepthBuffer;
 	VkFormat m_DepthBufferFormat{ VK_FORMAT_UNDEFINED };
@@ -206,12 +207,9 @@ private:
 	VkDescriptorSetLayout m_SamplerSetLayout;
 	//VkPushConstantRange m_PushConstantRange;
 
-	VkDescriptorPool m_DescriptorPool;
+	VkDescriptorPool m_DescriptorPool;			// Set 0 of every frame in flight
 	VkDescriptorPool m_SamplerDescriptorPool;
-	std::vector<VkDescriptorSet> m_DescriptorSets;
 	std::vector<VkDescriptorSet> m_SamplerDescriptorSets;
-
-	std::vector<Rendering::AllocatedBuffer> m_VpUniformBuffer;	// Persistently mapped
 
 	// - Assets
 	std::vector<Rendering::AllocatedImage> m_TextureImages;
@@ -222,16 +220,11 @@ private:
 	VkRenderPass m_RenderPass;
 
 	// - Pools
-	VkCommandPool m_GraphicsCommandPool;
+	VkCommandPool m_GraphicsCommandPool;	// One-off commands (uploads). Frames record from their own pools.
 
 	// - Utility
 	VkFormat m_SwapchainImageFormat;
 	VkExtent2D m_SwapchainExtent;
-
-	// - Synchronisation
-	std::vector<VkSemaphore> m_ImageAvailable;
-	std::vector<VkSemaphore> m_RenderFinished;
-	std::vector<VkFence> m_DrawFences;
 
 	// Validation layer trackers
 	std::uint16_t m_PerformanceMsgCount{ 0 };	// Validation layer detects that we can probably do better for performance
@@ -255,23 +248,18 @@ private:
 	void createDepthBufferImage();
 	void createFramebuffers();
 	void createCommandPool();
-	void createCommandBuffers();
 	void createTextureSampler();
 
-	void createUniformBuffers();
 	void createDescriptorPool();
-	void createDescriptorSets();
-
-	void createSynchronisation();
-
-	void updateUniformBuffers(uint32_t imageIndex);			// Called in draw()
 
 	// - Resizable window related
-	void cleanupSwapchain();	// Called in draw or cleanup
-	void recreateSwapchain();	// Called in draw, if window size changed
+	void cleanupSwapchain();	// Swapchain, its image views, framebuffers, depth buffer: everything sized like the window
+	void recreateSwapchain();	// Waits for the GPU, then rebuilds what cleanupSwapchain destroyed (blocks while minimised)
+	// The window's framebuffer no longer matches the swapchain (resized), checked every frame without any GLFW callback
+	[[nodiscard]] bool doesSwapchainNeedRecreation() const;
 
 	// - Record functions
-	void recordCommands(uint32_t currentImage, const std::vector<RenderInstance>& instances);				// Now also called in draw()
+	void recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, const std::vector<RenderInstance>& instances);
 
 	// - Get functions
 	void getPhysicalDevice();

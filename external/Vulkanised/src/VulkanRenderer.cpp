@@ -39,15 +39,11 @@ int Vulkanised::VulkanRenderer::init(GLFWwindow* newWindow)
 		createDepthBufferImage();
 		createFramebuffers();
 		createCommandPool();
-		createCommandBuffers();
-		createTimestampQueryPools();
 		createTextureSampler();
 		createUnifiedBuffers();
-		createUniformBuffers();
-		createSSBOs();
 		createDescriptorPool();
-		createDescriptorSets();
-		createSynchronisation();
+		createFrameResources();
+		createRenderFinishedSemaphores();
 
 		// UBO DEFAULTS
 		// - View & Projection
@@ -155,16 +151,35 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	}
 	m_PreviousSubmitFrameStartTime = SubmitFrameStartTime;
 
-	// Wait & Reset Fences
-	vkWaitForFences(m_MainDevice.logicalDevice, 1, &m_DrawFences[m_CurrentFrame], VK_TRUE, std::numeric_limits<uint64_t>::max());
+	// The window was resized (or minimised): rebuild the swapchain first, instead of waiting for the driver to complain
+	if (doesSwapchainNeedRecreation())
+	{
+		recreateSwapchain();
+	}
+
+	Rendering::FrameResources& CurrentFrame = m_Frames[m_CurrentFrame];
+
+	// 0. Wait until the GPU is done with this frame's resources (from their use c_MaxFrameDraws frames ago)...
+	vkWaitForFences(m_MainDevice.logicalDevice, 1, &CurrentFrame.m_InFlightFence, VK_TRUE, std::numeric_limits<uint64_t>::max());
 	const std::chrono::steady_clock::time_point GpuWaitEndTime = std::chrono::steady_clock::now();
 	recordFrameStatistic(m_FrameStatistics.m_CpuWaitForGpuTimeInMilliseconds, std::chrono::duration<float, std::milli>(GpuWaitEndTime - SubmitFrameStartTime).count());
-	readFinishedTimestampQueries(m_CurrentFrame);	// That frame slot's last use is finished, so its GPU timings are ready
-	vkResetFences(m_MainDevice.logicalDevice, 1, &m_DrawFences[m_CurrentFrame]);
+	readFinishedTimestampQueries(CurrentFrame);
 
-	uint32_t imageIndex{ 0 };
-	VkResult result = vkAcquireNextImageKHR(m_MainDevice.logicalDevice, m_Swapchain, std::numeric_limits<uint64_t>::max(), m_ImageAvailable[m_CurrentFrame], VK_NULL_HANDLE, &imageIndex);
-	if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapchain(); return; }
+	// ...then get an image to draw into. The fence is only reset once this frame is sure to be submitted: it used to be
+	// reset BEFORE acquiring, so an out-of-date acquire returned with it unsignalled, and the next wait on it never ended.
+	uint32_t SwapchainImageIndex{ 0 };
+	const VkResult AcquireResult = vkAcquireNextImageKHR(m_MainDevice.logicalDevice, m_Swapchain, std::numeric_limits<uint64_t>::max(),
+		CurrentFrame.m_SwapchainImageAvailableSemaphore, VK_NULL_HANDLE, &SwapchainImageIndex);
+	if (AcquireResult == VK_ERROR_OUT_OF_DATE_KHR)
+	{
+		recreateSwapchain();
+		return;
+	}
+	if (AcquireResult != VK_SUCCESS && AcquireResult != VK_SUBOPTIMAL_KHR)	// Suboptimal still works: the size check above deals with it next frame
+	{
+		LOGNTHROW("Failed to acquire a swapchain image (VkResult {})", static_cast<int>(AcquireResult));
+	}
+	vkResetFences(m_MainDevice.logicalDevice, 1, &CurrentFrame.m_InFlightFence);
 
 	// 1. Sort the incoming ECS payload to maximize batching (Group by Mesh, then Texture)
 	std::vector<RenderInstance> sortedInstances = instances;
@@ -181,60 +196,63 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 		return a.textureID < b.textureID;
 		});
 
-	// 2. Upload ALL transforms to the persistently mapped SSBO
-	glm::mat4* ssboData = static_cast<glm::mat4*>(m_SSBO[imageIndex].m_MappedData);
-	for (size_t i = 0; i < sortedInstances.size(); ++i) {
-		ssboData[i] = sortedInstances[i].transform;
+	// 2. Write every transform into this frame's (persistently mapped) instance buffer
+	glm::mat4* InstanceTransforms = static_cast<glm::mat4*>(CurrentFrame.m_InstanceBuffer.m_MappedData);
+	for (size_t CurrentInstanceIndex{ 0 }; CurrentInstanceIndex < sortedInstances.size(); ++CurrentInstanceIndex)
+	{
+		InstanceTransforms[CurrentInstanceIndex] = sortedInstances[CurrentInstanceIndex].transform;
 	}
-	m_GpuMemory.flushBufferWrites(m_SSBO[imageIndex], 0, sizeof(glm::mat4) * std::max<size_t>(sortedInstances.size(), 1));
+	m_GpuMemory.flushBufferWrites(CurrentFrame.m_InstanceBuffer, 0, sizeof(glm::mat4) * std::max<size_t>(sortedInstances.size(), 1));
 	m_FrameStatistics.m_SubmittedInstanceCount = static_cast<uint32_t>(instances.size());
 	m_FrameStatistics.m_DrawnInstanceCount = static_cast<uint32_t>(sortedInstances.size());
 	m_FrameStatistics.m_CulledInstanceCount = 0;
 
-	// 3. Update Camera & Record specific commands for this sorted layout
+	// 3. Camera and light
 	updateProjectionMatrixFromCameraLens();	// Cheap, and keeps the aspect ratio right after any resize
-	updateUniformBuffers(imageIndex);
+	memcpy(CurrentFrame.m_CameraUniformBuffer.m_MappedData, &m_UboViewProjection, sizeof(UboViewProjection));
+	m_GpuMemory.flushBufferWrites(CurrentFrame.m_CameraUniformBuffer);
 
-	// We pass the sorted list directly to recordCommands now
-	vkResetCommandBuffer(m_CommandBuffers[imageIndex], 0);
-	// Note: You must modify recordCommands signature to accept the sortedInstances. Let's inline the recording here for clarity or pass it.
-	// A screenshot was asked for: this frame also copies its finished image into a CPU-readable buffer
-	prepareScreenshotBufferIfRequested();
+	// 4. Record. The whole pool is reset at once (cheaper than resetting the buffer on its own).
+	vkResetCommandPool(m_MainDevice.logicalDevice, CurrentFrame.m_CommandPool, 0);
+	prepareScreenshotBufferIfRequested();	// A screenshot was asked for: this frame also copies its finished image into a CPU-readable buffer
+	recordCommands(CurrentFrame, SwapchainImageIndex, sortedInstances);
 
-	// Assuming recordCommands is modified to take the list:
-	recordCommands(imageIndex, sortedInstances);
-
-	// Submission and Present remain identical to old draw()
+	// 5. Submit: wait for the image to be available before writing colour, signal this image's render-finished semaphore
 	VkSubmitInfo submitInfo{};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submitInfo.waitSemaphoreCount = 1;
-	submitInfo.pWaitSemaphores = &m_ImageAvailable[m_CurrentFrame];
+	submitInfo.pWaitSemaphores = &CurrentFrame.m_SwapchainImageAvailableSemaphore;
 	VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 	submitInfo.pWaitDstStageMask = waitStages;
 	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &m_CommandBuffers[imageIndex];
+	submitInfo.pCommandBuffers = &CurrentFrame.m_CommandBuffer;
 	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = &m_RenderFinished[imageIndex];
+	submitInfo.pSignalSemaphores = &m_RenderFinishedSemaphores[SwapchainImageIndex];
 
-	if (vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, m_DrawFences[m_CurrentFrame]) != VK_SUCCESS)
-		throw std::runtime_error("failed to submit command buffer to queue");
+	if (vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, CurrentFrame.m_InFlightFence) != VK_SUCCESS)
+	{
+		LOGNTHROW("Failed to submit a frame's command buffer");
+	}
 
 	const bool IsScreenshotFrame = m_ShouldCaptureScreenshotThisFrame;
 	if (IsScreenshotFrame)
 	{
-		vkQueueWaitIdle(m_GraphicsQueue);	// Only on screenshot frames: the copy has to be finished before reading it
+		// Only on screenshot frames: the copy has to be finished before reading it (waits for this frame only, not the whole queue)
+		vkWaitForFences(m_MainDevice.logicalDevice, 1, &CurrentFrame.m_InFlightFence, VK_TRUE, std::numeric_limits<uint64_t>::max());
 		writeCapturedScreenshotToFile();
 	}
 
+	// 6. Present
 	VkPresentInfoKHR presentInfo{};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = &m_RenderFinished[imageIndex];
+	presentInfo.pWaitSemaphores = &m_RenderFinishedSemaphores[SwapchainImageIndex];
 	presentInfo.swapchainCount = 1;
 	presentInfo.pSwapchains = &m_Swapchain;
-	presentInfo.pImageIndices = &imageIndex;
+	presentInfo.pImageIndices = &SwapchainImageIndex;
 
-	VkResult presentResult = vkQueuePresentKHR(m_PresentationQueue, &presentInfo);
+	const VkResult PresentResult = vkQueuePresentKHR(m_PresentationQueue, &presentInfo);
+
 	// Screenshot frames wait for the GPU and write a file: they would drag the averages up, so they (and the interval
 	// that ends on the next frame) are left out
 	if (!IsScreenshotFrame)
@@ -242,9 +260,18 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 		recordFrameStatistic(m_FrameStatistics.m_CpuSubmitTimeInMilliseconds, std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - GpuWaitEndTime).count());
 	}
 	m_WasPreviousFrameAScreenshotFrame = IsScreenshotFrame;
-	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapchain(); return; }
 
+	// The frame went out either way (its fence will signal), so move on to the next frame's resources first
 	m_CurrentFrame = (m_CurrentFrame + 1) % Utilities::Vulkan::c_MaxFrameDraws;
+
+	if (PresentResult == VK_ERROR_OUT_OF_DATE_KHR)
+	{
+		recreateSwapchain();
+	}
+	else if (PresentResult != VK_SUCCESS && PresentResult != VK_SUBOPTIMAL_KHR)
+	{
+		LOGNTHROW("Failed to present a frame (VkResult {})", static_cast<int>(PresentResult));
+	}
 }
 
 void Vulkanised::VulkanRenderer::recordFrameStatistic(float& SmoothedValue, float NewValue) const noexcept
@@ -254,7 +281,7 @@ void Vulkanised::VulkanRenderer::recordFrameStatistic(float& SmoothedValue, floa
 	SmoothedValue = (SmoothedValue == 0.0f) ? NewValue : SmoothedValue + (NewValue - SmoothedValue) * c_NewValueWeight;
 }
 
-void Vulkanised::VulkanRenderer::createTimestampQueryPools()
+void Vulkanised::VulkanRenderer::createFrameResources()
 {
 	// Timestamps need the graphics queue to support them (timestampValidBits) and a non-zero tick length
 	uint32_t QueueFamilyCount{ 0 };
@@ -267,41 +294,148 @@ void Vulkanised::VulkanRenderer::createTimestampQueryPools()
 	if (!m_CanWriteTimestamps)
 	{
 		LOGW("This GPU's graphics queue can't write timestamps, GPU frame times won't be measured.");
-		return;
 	}
 
-	m_TimestampQueryPools.resize(Utilities::Vulkan::c_MaxFrameDraws, VK_NULL_HANDLE);
-	m_HasTimestampQueriesToRead.assign(Utilities::Vulkan::c_MaxFrameDraws, false);
-	for (VkQueryPool& CurrentQueryPool : m_TimestampQueryPools)
+	VkCommandPoolCreateInfo CommandPoolCreateInfo{};
+	CommandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	CommandPoolCreateInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;	// Its one buffer is re-recorded every frame
+	CommandPoolCreateInfo.queueFamilyIndex = static_cast<uint32_t>(GraphicsQueueFamilyIndex);
+
+	VkFenceCreateInfo FenceCreateInfo{};
+	FenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	FenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;	// So the very first wait on it returns straight away
+
+	VkSemaphoreCreateInfo SemaphoreCreateInfo{};
+	SemaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+	for (size_t CurrentFrameIndex{ 0 }; CurrentFrameIndex < m_Frames.size(); ++CurrentFrameIndex)
 	{
-		VkQueryPoolCreateInfo QueryPoolCreateInfo{};
-		QueryPoolCreateInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-		QueryPoolCreateInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
-		QueryPoolCreateInfo.queryCount = 2;
-		if (vkCreateQueryPool(m_MainDevice.logicalDevice, &QueryPoolCreateInfo, nullptr, &CurrentQueryPool) != VK_SUCCESS)
+		Rendering::FrameResources& CurrentFrame = m_Frames[CurrentFrameIndex];
+
+		if (vkCreateCommandPool(m_MainDevice.logicalDevice, &CommandPoolCreateInfo, nullptr, &CurrentFrame.m_CommandPool) != VK_SUCCESS)
 		{
-			LOGNTHROW("Failed to create a timestamp query pool");
+			LOGNTHROW("Failed to create a frame's command pool");
+		}
+		VkCommandBufferAllocateInfo CommandBufferAllocateInfo{};
+		CommandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		CommandBufferAllocateInfo.commandPool = CurrentFrame.m_CommandPool;
+		CommandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		CommandBufferAllocateInfo.commandBufferCount = 1;
+		if (vkAllocateCommandBuffers(m_MainDevice.logicalDevice, &CommandBufferAllocateInfo, &CurrentFrame.m_CommandBuffer) != VK_SUCCESS)
+		{
+			LOGNTHROW("Failed to allocate a frame's command buffer");
+		}
+
+		if (vkCreateFence(m_MainDevice.logicalDevice, &FenceCreateInfo, nullptr, &CurrentFrame.m_InFlightFence) != VK_SUCCESS
+			|| vkCreateSemaphore(m_MainDevice.logicalDevice, &SemaphoreCreateInfo, nullptr, &CurrentFrame.m_SwapchainImageAvailableSemaphore) != VK_SUCCESS)
+		{
+			LOGNTHROW("Failed to create a frame's fence or semaphore");
+		}
+
+		// Persistently mapped, written straight into every frame
+		CurrentFrame.m_InstanceBuffer = m_GpuMemory.createBuffer(sizeof(glm::mat4) * MAX_INSTANCES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			Rendering::GpuMemoryUsage::CpuWritesGpuReads, "Instance data (frame " + std::to_string(CurrentFrameIndex) + ")");
+		CurrentFrame.m_CameraUniformBuffer = m_GpuMemory.createBuffer(sizeof(UboViewProjection), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			Rendering::GpuMemoryUsage::CpuWritesGpuReads, "Camera and light (frame " + std::to_string(CurrentFrameIndex) + ")");
+
+		if (m_CanWriteTimestamps)
+		{
+			VkQueryPoolCreateInfo QueryPoolCreateInfo{};
+			QueryPoolCreateInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+			QueryPoolCreateInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+			QueryPoolCreateInfo.queryCount = 2;
+			if (vkCreateQueryPool(m_MainDevice.logicalDevice, &QueryPoolCreateInfo, nullptr, &CurrentFrame.m_TimestampQueryPool) != VK_SUCCESS)
+			{
+				LOGNTHROW("Failed to create a timestamp query pool");
+			}
+		}
+
+		// Set 0: camera uniforms (binding 0) and instance data (binding 1)
+		VkDescriptorSetAllocateInfo DescriptorSetAllocateInfo{};
+		DescriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		DescriptorSetAllocateInfo.descriptorPool = m_DescriptorPool;
+		DescriptorSetAllocateInfo.descriptorSetCount = 1;
+		DescriptorSetAllocateInfo.pSetLayouts = &m_DescriptorSetLayout;
+		if (vkAllocateDescriptorSets(m_MainDevice.logicalDevice, &DescriptorSetAllocateInfo, &CurrentFrame.m_FrameDescriptorSet) != VK_SUCCESS)
+		{
+			LOGNTHROW("Failed to allocate a frame's descriptor set");
+		}
+
+		const VkDescriptorBufferInfo CameraBufferInfo{ CurrentFrame.m_CameraUniformBuffer.m_Buffer, 0, sizeof(UboViewProjection) };
+		const VkDescriptorBufferInfo InstanceBufferInfo{ CurrentFrame.m_InstanceBuffer.m_Buffer, 0, VK_WHOLE_SIZE };
+		std::array<VkWriteDescriptorSet, 2> DescriptorWrites{};
+		DescriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		DescriptorWrites[0].dstSet = CurrentFrame.m_FrameDescriptorSet;
+		DescriptorWrites[0].dstBinding = 0;
+		DescriptorWrites[0].descriptorCount = 1;
+		DescriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+		DescriptorWrites[0].pBufferInfo = &CameraBufferInfo;
+		DescriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		DescriptorWrites[1].dstSet = CurrentFrame.m_FrameDescriptorSet;
+		DescriptorWrites[1].dstBinding = 1;
+		DescriptorWrites[1].descriptorCount = 1;
+		DescriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+		DescriptorWrites[1].pBufferInfo = &InstanceBufferInfo;
+		vkUpdateDescriptorSets(m_MainDevice.logicalDevice, static_cast<uint32_t>(DescriptorWrites.size()), DescriptorWrites.data(), 0, nullptr);
+	}
+}
+
+void Vulkanised::VulkanRenderer::destroyFrameResources() noexcept
+{
+	for (Rendering::FrameResources& CurrentFrame : m_Frames)
+	{
+		// The descriptor set goes back with its pool, and the command buffer with its command pool
+		vkDestroyQueryPool(m_MainDevice.logicalDevice, CurrentFrame.m_TimestampQueryPool, nullptr);
+		m_GpuMemory.destroyBuffer(CurrentFrame.m_CameraUniformBuffer);
+		m_GpuMemory.destroyBuffer(CurrentFrame.m_InstanceBuffer);
+		vkDestroySemaphore(m_MainDevice.logicalDevice, CurrentFrame.m_SwapchainImageAvailableSemaphore, nullptr);
+		vkDestroyFence(m_MainDevice.logicalDevice, CurrentFrame.m_InFlightFence, nullptr);
+		vkDestroyCommandPool(m_MainDevice.logicalDevice, CurrentFrame.m_CommandPool, nullptr);
+		CurrentFrame = {};
+	}
+}
+
+void Vulkanised::VulkanRenderer::createRenderFinishedSemaphores()
+{
+	VkSemaphoreCreateInfo SemaphoreCreateInfo{};
+	SemaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+	m_RenderFinishedSemaphores.resize(m_SwapchainImages.size(), VK_NULL_HANDLE);
+	for (VkSemaphore& CurrentSemaphore : m_RenderFinishedSemaphores)
+	{
+		if (vkCreateSemaphore(m_MainDevice.logicalDevice, &SemaphoreCreateInfo, nullptr, &CurrentSemaphore) != VK_SUCCESS)
+		{
+			LOGNTHROW("Failed to create a render finished semaphore");
 		}
 	}
 }
 
-void Vulkanised::VulkanRenderer::readFinishedTimestampQueries(int FrameSlotIndex)
+void Vulkanised::VulkanRenderer::destroyRenderFinishedSemaphores() noexcept
 {
-	if (!m_CanWriteTimestamps || !m_HasTimestampQueriesToRead[FrameSlotIndex])
+	for (VkSemaphore CurrentSemaphore : m_RenderFinishedSemaphores)
+	{
+		vkDestroySemaphore(m_MainDevice.logicalDevice, CurrentSemaphore, nullptr);
+	}
+	m_RenderFinishedSemaphores.clear();
+}
+
+void Vulkanised::VulkanRenderer::readFinishedTimestampQueries(Rendering::FrameResources& FinishedFrame)
+{
+	if (!m_CanWriteTimestamps || !FinishedFrame.m_HasTimestampQueriesToRead)
 	{
 		return;
 	}
 
-	// Called right after this slot's fence was waited on, so the results are there (no WAIT flag: never stall here)
+	// Called right after this frame's fence was waited on, so the results are there (no WAIT flag: never stall here)
 	std::array<uint64_t, 2> TimestampTicks{};
-	const VkResult QueryResult = vkGetQueryPoolResults(m_MainDevice.logicalDevice, m_TimestampQueryPools[FrameSlotIndex], 0, 2,
+	const VkResult QueryResult = vkGetQueryPoolResults(m_MainDevice.logicalDevice, FinishedFrame.m_TimestampQueryPool, 0, 2,
 		sizeof(TimestampTicks), TimestampTicks.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
 	if (QueryResult == VK_SUCCESS && TimestampTicks[1] >= TimestampTicks[0])
 	{
 		const double ElapsedNanoseconds = static_cast<double>(TimestampTicks[1] - TimestampTicks[0]) * m_PhysicalDeviceProperties.limits.timestampPeriod;
 		recordFrameStatistic(m_FrameStatistics.m_GpuFrameTimeInMilliseconds, static_cast<float>(ElapsedNanoseconds / 1.0e6));
 	}
-	m_HasTimestampQueriesToRead[FrameSlotIndex] = false;
+	FinishedFrame.m_HasTimestampQueriesToRead = false;
 }
 
 void Vulkanised::VulkanRenderer::requestScreenshot(const std::filesystem::path& OutputBitmapFilePath)
@@ -652,11 +786,9 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 	m_TextureImages.clear();
 	m_GpuMemory.destroyBuffer(m_ScreenshotBuffer);	// Only alive if the app closed with a screenshot still pending
 
-	for (VkQueryPool& CurrentQueryPool : m_TimestampQueryPools)
-	{
-		vkDestroyQueryPool(m_MainDevice.logicalDevice, CurrentQueryPool, nullptr);
-		CurrentQueryPool = VK_NULL_HANDLE;
-	}
+	// Frames in flight (their descriptor sets go back with m_DescriptorPool, just below)
+	destroyFrameResources();
+	destroyRenderFinishedSemaphores();
 
 	if (m_DescriptorPool != VK_NULL_HANDLE)
 	{
@@ -674,29 +806,6 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 	// Destroy Unified Geometry Buffers (These survive window resizes, so they only die on app exit)
 	m_GpuMemory.destroyBuffer(m_GlobalVertexBuffer);
 	m_GpuMemory.destroyBuffer(m_GlobalIndexBuffer);
-
-	// Destroy semaphores and fences
-	for (size_t i{ 0 }; i < Utilities::Vulkan::c_MaxFrameDraws; i++)
-	{
-		if (m_ImageAvailable[i] != VK_NULL_HANDLE)
-		{
-			vkDestroySemaphore(m_MainDevice.logicalDevice, m_ImageAvailable[i], nullptr);
-			m_ImageAvailable[i] = VK_NULL_HANDLE;
-		}
-		if (m_DrawFences[i] != VK_NULL_HANDLE)
-		{
-			vkDestroyFence(m_MainDevice.logicalDevice, m_DrawFences[i], nullptr);
-			m_DrawFences[i] = VK_NULL_HANDLE;
-		}
-	}
-	for (auto renderFinishedSemaphore : m_RenderFinished)
-	{
-		if (renderFinishedSemaphore != VK_NULL_HANDLE)
-		{
-			vkDestroySemaphore(m_MainDevice.logicalDevice, renderFinishedSemaphore, nullptr);
-			renderFinishedSemaphore = VK_NULL_HANDLE;
-		}
-	}
 
 	if (m_GraphicsCommandPool != VK_NULL_HANDLE)
 	{
@@ -808,18 +917,6 @@ void Vulkanised::VulkanRenderer::growUnifiedBuffer(Rendering::AllocatedBuffer& B
 	m_GpuMemory.destroyBuffer(BufferToGrow);
 	LOG("Grew the unified {} buffer from {} MB to {} MB.", BufferNameForLogging, PreviousCapacityInBytes / (1024 * 1024), NewCapacityInBytes / (1024 * 1024));
 	BufferToGrow = GrownBuffer;
-}
-
-void Vulkanised::VulkanRenderer::createSSBOs()
-{
-	VkDeviceSize bufferSize = sizeof(glm::mat4) * MAX_INSTANCES;
-
-	m_SSBO.resize(m_SwapchainImages.size());
-	for (Rendering::AllocatedBuffer& CurrentInstanceBuffer : m_SSBO)
-	{
-		// Persistently mapped (VMA keeps it mapped for its whole life), written straight into every frame
-		CurrentInstanceBuffer = m_GpuMemory.createBuffer(bufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, Rendering::GpuMemoryUsage::CpuWritesGpuReads, "Instance transforms");
-	}
 }
 
 void Vulkanised::VulkanRenderer::logTrackers() const noexcept
@@ -1171,15 +1268,15 @@ void Vulkanised::VulkanRenderer::createRenderPass()
 	// Need to determine when layout transitions occur using subpass dependencies
 	std::array<VkSubpassDependency, 2> subpassDependencies{};
 
-	// Conversion from VK_IMAGE_LAYOUT_UNDEFINED to VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-	// Transition must happen after...
-	subpassDependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;						// Subpass index (VK_SUBPASS_EXTERNAL = Special value meaning outside of renderpass)
-	subpassDependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;		// Pipeline stage
-	subpassDependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;				// Stage access mask (memory access)
-	// But must happen before...
+	// Before the pass: the colour image comes from the presentation engine (which signalled the acquire semaphore, waited on at
+	// COLOR_ATTACHMENT_OUTPUT), and the ONE depth buffer is shared by every frame in flight, so the previous frame's depth
+	// writes (late fragment tests) must be done before this frame clears it (early fragment tests). The depth part was missing.
+	subpassDependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+	subpassDependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	subpassDependencies[0].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 	subpassDependencies[0].dstSubpass = 0;
-	subpassDependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	subpassDependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	subpassDependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+	subpassDependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 	subpassDependencies[0].dependencyFlags = 0;
 
 	// Conversion from VK_IMAGE_LAYOUT_OPTIMAL to VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
@@ -1620,25 +1717,6 @@ void Vulkanised::VulkanRenderer::createCommandPool()
 	}
 }
 
-void Vulkanised::VulkanRenderer::createCommandBuffers()
-{
-	// Resize command buffer count to have 1 for each framebuffer
-	m_CommandBuffers.resize(m_SwapchainFramebuffers.size());
-
-	VkCommandBufferAllocateInfo commandBufferAllocInfo{};
-	commandBufferAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	commandBufferAllocInfo.commandPool = m_GraphicsCommandPool;
-	commandBufferAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;		// VK_COMMAND_BUFFER_LEVEL_PRIMARY : Buffer you submit directly to queue. Can't be called directly by other buffers.
-																		// VK_COMMAND_BUFFER_LEVEL_SECONDARY : Buffer can't be called directly. Can be called from other buffers via "vkCmdExecuteCommands" when recording commands in primary buffer
-	commandBufferAllocInfo.commandBufferCount = static_cast<uint32_t>(m_CommandBuffers.size());
-
-	// Allocate command buffers and place handles in array of buffers
-	if (vkAllocateCommandBuffers(m_MainDevice.logicalDevice, &commandBufferAllocInfo, m_CommandBuffers.data()) != VK_SUCCESS)
-	{
-		LOGNTHROW("failed to allocate command buffers");
-	}
-}
-
 void Vulkanised::VulkanRenderer::createTextureSampler()
 {
 	// Sampler Creation Info
@@ -1664,81 +1742,20 @@ void Vulkanised::VulkanRenderer::createTextureSampler()
 	}
 }
 
-void Vulkanised::VulkanRenderer::createSynchronisation()
-{
-	m_ImageAvailable.resize(Utilities::Vulkan::c_MaxFrameDraws);
-	//m_RenderFinished.resize(Utilities::Vulkan::c_MaxFrameDraws);
-	m_DrawFences.resize(Utilities::Vulkan::c_MaxFrameDraws);
-
-	// Get the actual number of images in the swapchain
-	uint32_t imageCount;
-	vkGetSwapchainImagesKHR(m_MainDevice.logicalDevice, m_Swapchain, &imageCount, nullptr);
-
-	m_RenderFinished.resize(imageCount);
-
-	// Semaphore creation information
-	VkSemaphoreCreateInfo semaphoreCreateInfo{};
-	semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-
-	// Fence creation information
-	VkFenceCreateInfo fenceCreateInfo{};
-	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-	fenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-
-	for (size_t i = 0; i < Utilities::Vulkan::c_MaxFrameDraws; i++)
-	{
-		if (vkCreateSemaphore(m_MainDevice.logicalDevice, &semaphoreCreateInfo, nullptr, &m_ImageAvailable[i]) != VK_SUCCESS ||
-			//vkCreateSemaphore(m_MainDevice.logicalDevice, &semaphoreCreateInfo, nullptr, &m_RenderFinished[i]) != VK_SUCCESS ||
-			vkCreateFence(m_MainDevice.logicalDevice, &fenceCreateInfo, nullptr, &m_DrawFences[i]) != VK_SUCCESS)
-		{
-			LOGNTHROW("failed to create image available semaphore(s) and/or draw fence(s)");
-		}
-	}
-
-	// The render finished semaphores need to amount up to the image count in the swapchain, so it has its own loop
-	for (size_t i = 0; i < imageCount; i++)
-	{
-		if (vkCreateSemaphore(m_MainDevice.logicalDevice, &semaphoreCreateInfo, nullptr, &m_RenderFinished[i]) != VK_SUCCESS)
-		{
-			LOGNTHROW("failed to create render finished semaphore(s)");
-		}
-	}
-}
-
-void Vulkanised::VulkanRenderer::createUniformBuffers()
-{
-	// One camera/light uniform buffer for each image (and by extension, command buffer), persistently mapped
-	m_VpUniformBuffer.resize(m_SwapchainImages.size());
-	for (Rendering::AllocatedBuffer& CurrentCameraUniformBuffer : m_VpUniformBuffer)
-	{
-		CurrentCameraUniformBuffer = m_GpuMemory.createBuffer(sizeof(UboViewProjection), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, Rendering::GpuMemoryUsage::CpuWritesGpuReads, "Camera and light uniforms");
-	}
-}
-
 void Vulkanised::VulkanRenderer::createDescriptorPool()
 {
-	// CREATE UNIFORM DESCRIPTOR POOL
-	// Type of descriptors + how many DESCRIPTORS, not descriptor sets (combined makes the pool size)
-	// ViewProjection Pool
-	VkDescriptorPoolSize vpPoolSize = {};
-	vpPoolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	vpPoolSize.descriptorCount = static_cast<uint32_t>(m_VpUniformBuffer.size());
+	// FRAME DESCRIPTOR POOL: set 0 (camera uniforms + instance data) of every frame in flight. Never reset, never grows.
+	constexpr uint32_t c_FrameCount{ static_cast<uint32_t>(Utilities::Vulkan::c_MaxFrameDraws) };
+	const std::array<VkDescriptorPoolSize, 2> FramePoolSizes{ {
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, c_FrameCount },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, c_FrameCount } } };
 
-	VkDescriptorPoolSize ssboPoolSize = {};
-	ssboPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	ssboPoolSize.descriptorCount = static_cast<uint32_t>(m_SSBO.size());
-
-	// List of pool sizes
-	std::vector<VkDescriptorPoolSize> descriptorPoolSizes = { vpPoolSize, ssboPoolSize };
-
-	// Data to create descriptor pool
 	VkDescriptorPoolCreateInfo poolCreateInfo{};
 	poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolCreateInfo.maxSets = static_cast<uint32_t>(m_SwapchainImages.size());					// Maximum number of Descriptor Sets that can be created from pool
-	poolCreateInfo.poolSizeCount = static_cast<uint32_t>(descriptorPoolSizes.size());			// Amount of Pool Sizes being passed
-	poolCreateInfo.pPoolSizes = descriptorPoolSizes.data();										// Pool Sizes to create pool with
+	poolCreateInfo.maxSets = c_FrameCount;
+	poolCreateInfo.poolSizeCount = static_cast<uint32_t>(FramePoolSizes.size());
+	poolCreateInfo.pPoolSizes = FramePoolSizes.data();
 
-	// Create descriptor pool
 	if (vkCreateDescriptorPool(m_MainDevice.logicalDevice, &poolCreateInfo, nullptr, &m_DescriptorPool) != VK_SUCCESS)
 	{
 		LOGNTHROW("failed to create the uniform descriptor pool");
@@ -1762,163 +1779,82 @@ void Vulkanised::VulkanRenderer::createDescriptorPool()
 	}
 }
 
-void Vulkanised::VulkanRenderer::createDescriptorSets()
-{
-	// Resize descriptor set list such that one for every buffer
-	m_DescriptorSets.resize(m_SwapchainImages.size());
-
-	std::vector<VkDescriptorSetLayout> setLayouts(m_SwapchainImages.size(), m_DescriptorSetLayout);
-
-	// Descriptor set allocation info
-	VkDescriptorSetAllocateInfo setAllocInfo{};
-	setAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	setAllocInfo.descriptorPool = m_DescriptorPool;											// Pool to allocate descriptor set from
-	setAllocInfo.descriptorSetCount = static_cast<uint32_t>(m_SwapchainImages.size());		// Number of sets to allocate
-	setAllocInfo.pSetLayouts = setLayouts.data();											// Layouts to use to allocate sets (1:1 relationship)
-
-	// Allocate descriptor sets (multiple)
-	if (vkAllocateDescriptorSets(m_MainDevice.logicalDevice, &setAllocInfo, m_DescriptorSets.data()) != VK_SUCCESS)
-	{
-		LOGNTHROW("failed to allocate descriptor sets");
-	}
-
-	// Update all of descriptor set buffer bindings
-	for (size_t i{ 0 }; i < m_SwapchainImages.size(); ++i)
-	{
-		// Buffer info and data offset info
-		VkDescriptorBufferInfo vpBufferInfo{};
-		vpBufferInfo.buffer = m_VpUniformBuffer[i].m_Buffer;	// Buffer to get data from
-		vpBufferInfo.offset = 0;							// Position of start of data
-		vpBufferInfo.range = sizeof(UboViewProjection);		// Size of data
-
-		// Data about connection between binding and buffer
-		VkWriteDescriptorSet vpSetWrite = {};
-		vpSetWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		vpSetWrite.dstSet = m_DescriptorSets[i];								// Descriptor Set to update
-		vpSetWrite.dstBinding = 0;											// Binding to update (matches with binding on layout/shader)
-		vpSetWrite.dstArrayElement = 0;									// Index in array to update
-		vpSetWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;		// Type of descriptor
-		vpSetWrite.descriptorCount = 1;									// Amount to update
-		vpSetWrite.pBufferInfo = &vpBufferInfo;							// Information about buffer data to bind
-
-		// SSBO DESCRIPTOR -> ECS related
-		VkDescriptorBufferInfo ssboInfo{};
-		ssboInfo.buffer = m_SSBO[i].m_Buffer;
-		ssboInfo.offset = 0;
-		ssboInfo.range = sizeof(glm::mat4) * MAX_INSTANCES;
-
-		VkWriteDescriptorSet ssboSetWrite = {};
-		ssboSetWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		ssboSetWrite.dstSet = m_DescriptorSets[i];
-		ssboSetWrite.dstBinding = 1;
-		ssboSetWrite.dstArrayElement = 0;
-		ssboSetWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-		ssboSetWrite.descriptorCount = 1;
-		ssboSetWrite.pBufferInfo = &ssboInfo;
-
-		// List of Descriptor Set Writes
-		std::vector<VkWriteDescriptorSet> setWrites = { vpSetWrite, ssboSetWrite };
-
-		// Update the descriptor sets with new buffer/binding info
-		vkUpdateDescriptorSets(m_MainDevice.logicalDevice, static_cast<uint32_t>(setWrites.size()), setWrites.data(), 0, nullptr);
-	}
-}
-
-void Vulkanised::VulkanRenderer::updateUniformBuffers(uint32_t imageIndex)
-{
-	// Persistently mapped: no map/unmap round trip every frame any more
-	memcpy(m_VpUniformBuffer[imageIndex].m_MappedData, &m_UboViewProjection, sizeof(UboViewProjection));
-	m_GpuMemory.flushBufferWrites(m_VpUniformBuffer[imageIndex]);
-}
-
 void Vulkanised::VulkanRenderer::cleanupSwapchain()
 {
-	// 1. Destroy Framebuffers
-	for (auto framebuffer : m_SwapchainFramebuffers)
+	// Only what's sized like the window lives and dies with the swapchain. Per-frame buffers, command pools and descriptor
+	// sets used to be torn down and rebuilt here on every resize too (the upload command pool included).
+
+	// 1. Framebuffers
+	for (VkFramebuffer CurrentFramebuffer : m_SwapchainFramebuffers)
 	{
-		if (framebuffer != VK_NULL_HANDLE)
-		{
-			vkDestroyFramebuffer(m_MainDevice.logicalDevice, framebuffer, nullptr);
-			framebuffer = VK_NULL_HANDLE;
-		}
+		vkDestroyFramebuffer(m_MainDevice.logicalDevice, CurrentFramebuffer, nullptr);
 	}
 	m_SwapchainFramebuffers.clear();
 
-	// 2. Destroy Uniform Buffers and instance SSBOs (since they are per-swapchain-image)
-	for (Rendering::AllocatedBuffer& CurrentCameraUniformBuffer : m_VpUniformBuffer)
+	// 2. Swapchain image views (the images themselves belong to the swapchain)
+	for (Utilities::Vulkan::SwapchainImage& CurrentSwapchainImage : m_SwapchainImages)
 	{
-		m_GpuMemory.destroyBuffer(CurrentCameraUniformBuffer);
-	}
-	m_VpUniformBuffer.clear();
-	for (Rendering::AllocatedBuffer& CurrentInstanceBuffer : m_SSBO)
-	{
-		m_GpuMemory.destroyBuffer(CurrentInstanceBuffer);
-	}
-	m_SSBO.clear();
-
-
-	// 3. Destroy Swapchain Image Views
-	for (auto& image : m_SwapchainImages)
-	{
-		if (image.imageView != VK_NULL_HANDLE)
-		{
-			vkDestroyImageView(m_MainDevice.logicalDevice, image.imageView, nullptr);
-			image.imageView = VK_NULL_HANDLE;
-		}
+		vkDestroyImageView(m_MainDevice.logicalDevice, CurrentSwapchainImage.imageView, nullptr);
 	}
 	m_SwapchainImages.clear();
 
-	// 4. Destroy the Swapchain
+	// 3. The swapchain
 	if (m_Swapchain != VK_NULL_HANDLE)
 	{
 		vkDestroySwapchainKHR(m_MainDevice.logicalDevice, m_Swapchain, nullptr);
 		m_Swapchain = VK_NULL_HANDLE;
 	}
 
-	// 5. Destroy Depth Buffer (Must match swapchain size)
+	// 4. Depth buffer (must match the swapchain size)
 	m_GpuMemory.destroyImage(m_DepthBuffer);
-
-	if (m_GraphicsCommandPool != VK_NULL_HANDLE) {
-		vkDestroyCommandPool(m_MainDevice.logicalDevice, m_GraphicsCommandPool, nullptr);
-		m_GraphicsCommandPool = VK_NULL_HANDLE;
-	}
 }
 
 void Vulkanised::VulkanRenderer::recreateSwapchain()
 {
-	// 1. Handle minimization
-	int width = 0, height = 0;
-	glfwGetFramebufferSize(m_Window.load().get(), &width, &height);
-	while (width == 0 || height == 0) {
-		glfwGetFramebufferSize(m_Window.load().get(), &width, &height);
+	// 1. Minimised: there's nothing to render into, so wait (handling events) until the window has a size again
+	int FramebufferWidth{ 0 };
+	int FramebufferHeight{ 0 };
+	glfwGetFramebufferSize(m_Window.load().get(), &FramebufferWidth, &FramebufferHeight);
+	while (FramebufferWidth == 0 || FramebufferHeight == 0)
+	{
 		glfwWaitEvents();
+		glfwGetFramebufferSize(m_Window.load().get(), &FramebufferWidth, &FramebufferHeight);
 	}
 
-	// 2. Wait for GPU to finish current work
+	// 2. Nothing may still be using the old images
 	vkDeviceWaitIdle(m_MainDevice.logicalDevice);
 
-	// 3. Wipe the resolution-dependent objects
+	// 3. Rebuild what depends on the window size
+	const size_t PreviousSwapchainImageCount = m_SwapchainImages.size();
 	cleanupSwapchain();
+	createSwapchain();
+	createDepthBufferImage();
+	createFramebuffers();
 
-	// 4. REBUILD EVERYTHING in the correct order
-	createSwapchain();           // Updates m_SwapchainExtent and m_SwapchainImages
-	createDepthBufferImage();    // Re-creates depth buffer for new size
-	createFramebuffers();        // Re-fills m_SwapchainFramebuffers
-	createSSBOs();				 // This is needed here too... (just needs to be after swapchain creation)
-	createUniformBuffers();      // Re-fills m_VpUniformBuffer and m_VpUniformBufferMemory
-	createCommandPool();         // Re-creates the pool (or just reset it)
-	createCommandBuffers();      // Re-fills m_CommandBuffers to match new image count
-
-	vkResetDescriptorPool(m_MainDevice.logicalDevice, m_DescriptorPool, 0);
-	createDescriptorSets();
+	// 4. One render-finished semaphore per swapchain image: only redone if the driver handed out a different number of images
+	if (m_SwapchainImages.size() != PreviousSwapchainImageCount)
+	{
+		destroyRenderFinishedSemaphores();
+		createRenderFinishedSemaphores();
+	}
 }
 
-void Vulkanised::VulkanRenderer::recordCommands(uint32_t currentImage, const std::vector<RenderInstance>& instances)
+bool Vulkanised::VulkanRenderer::doesSwapchainNeedRecreation() const
 {
-	// Information about how to begin each command buffer
+	int FramebufferWidth{ 0 };
+	int FramebufferHeight{ 0 };
+	glfwGetFramebufferSize(m_Window.load().get(), &FramebufferWidth, &FramebufferHeight);
+	return static_cast<uint32_t>(FramebufferWidth) != m_SwapchainExtent.width || static_cast<uint32_t>(FramebufferHeight) != m_SwapchainExtent.height;
+}
+
+void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, const std::vector<RenderInstance>& instances)
+{
+	const VkCommandBuffer CommandBuffer = FrameToRecord.m_CommandBuffer;
+
+	// Re-recorded from scratch every frame, so the driver can optimise it for exactly one submit
 	VkCommandBufferBeginInfo commandBufferBeginInfo{};
 	commandBufferBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	//commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;	// Buffer can be resubmitted when it has already been submitted and is awaiting execution
+	commandBufferBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
 	// Information about how to begin a render pass (only needed for graphical applications)
 	VkRenderPassBeginInfo renderPassBeginInfo{};
@@ -1933,38 +1869,37 @@ void Vulkanised::VulkanRenderer::recordCommands(uint32_t currentImage, const std
 
 	renderPassBeginInfo.pClearValues = clearValues.data();					// List of clear values
 	renderPassBeginInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-
-	renderPassBeginInfo.framebuffer = m_SwapchainFramebuffers[currentImage];
+	renderPassBeginInfo.framebuffer = m_SwapchainFramebuffers[SwapchainImageIndex];
 
 	// Start recording commands to command buffer!
-	if (vkBeginCommandBuffer(m_CommandBuffers[currentImage], &commandBufferBeginInfo) != VK_SUCCESS)
+	if (vkBeginCommandBuffer(CommandBuffer, &commandBufferBeginInfo) != VK_SUCCESS)
 	{
 		LOGNTHROW("Failed to start recording a Command Buffer!");
 	}
 
-	// GPU timing: one timestamp before everything, one after everything (read back once this frame slot's fence signals)
+	// GPU timing: one timestamp before everything, one after everything (read back once this frame's fence signals)
 	if (m_CanWriteTimestamps)
 	{
-		vkCmdResetQueryPool(m_CommandBuffers[currentImage], m_TimestampQueryPools[m_CurrentFrame], 0, 2);
-		vkCmdWriteTimestamp(m_CommandBuffers[currentImage], VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, m_TimestampQueryPools[m_CurrentFrame], 0);
+		vkCmdResetQueryPool(CommandBuffer, FrameToRecord.m_TimestampQueryPool, 0, 2);
+		vkCmdWriteTimestamp(CommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, FrameToRecord.m_TimestampQueryPool, 0);
 	}
 
-	vkCmdBeginRenderPass(m_CommandBuffers[currentImage], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+	vkCmdBeginRenderPass(CommandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 	VkViewport viewport{};
 	viewport.width = (float)m_SwapchainExtent.width; viewport.height = (float)m_SwapchainExtent.height;
 	viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
 	VkRect2D scissor{}; scissor.extent = m_SwapchainExtent;
-	vkCmdSetViewport(m_CommandBuffers[currentImage], 0, 1, &viewport);
-	vkCmdSetScissor(m_CommandBuffers[currentImage], 0, 1, &scissor);
+	vkCmdSetViewport(CommandBuffer, 0, 1, &viewport);
+	vkCmdSetScissor(CommandBuffer, 0, 1, &scissor);
 
-	vkCmdBindPipeline(m_CommandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
+	vkCmdBindPipeline(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_GraphicsPipeline);
 
 	// BIND UNIFIED BUFFERS ONCE!
 	VkBuffer vertexBuffers[] = { m_GlobalVertexBuffer.m_Buffer };
 	VkDeviceSize offsets[] = { 0 };
-	vkCmdBindVertexBuffers(m_CommandBuffers[currentImage], 0, 1, vertexBuffers, offsets);
-	vkCmdBindIndexBuffer(m_CommandBuffers[currentImage], m_GlobalIndexBuffer.m_Buffer, 0, VK_INDEX_TYPE_UINT32);
+	vkCmdBindVertexBuffers(CommandBuffer, 0, 1, vertexBuffers, offsets);
+	vkCmdBindIndexBuffer(CommandBuffer, m_GlobalIndexBuffer.m_Buffer, 0, VK_INDEX_TYPE_UINT32);
 
 	// INSTANCED RENDERING BATCH LOOP
 	m_FrameStatistics.m_DrawCallCount = 0;
@@ -2002,12 +1937,12 @@ void Vulkanised::VulkanRenderer::recordCommands(uint32_t currentImage, const std
 		// -----------------------------
 
 		// Bind Descriptor Sets for this batch
-		std::array<VkDescriptorSet, 2> descriptorSetGroup = { m_DescriptorSets[currentImage], m_SamplerDescriptorSets[currentTex] };
-		vkCmdBindDescriptorSets(m_CommandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, static_cast<uint32_t>(descriptorSetGroup.size()), descriptorSetGroup.data(), 0, nullptr);
+		std::array<VkDescriptorSet, 2> descriptorSetGroup = { FrameToRecord.m_FrameDescriptorSet, m_SamplerDescriptorSets[currentTex] };
+		vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, static_cast<uint32_t>(descriptorSetGroup.size()), descriptorSetGroup.data(), 0, nullptr);
 
 		// Execute Instanced Draw!
 		MeshAsset& asset = m_Meshes[currentMesh];
-		vkCmdDrawIndexed(m_CommandBuffers[currentImage], asset.indexCount, instanceCount, asset.firstIndex, asset.vertexOffset, static_cast<uint32_t>(firstInstance));
+		vkCmdDrawIndexed(CommandBuffer, asset.indexCount, instanceCount, asset.firstIndex, asset.vertexOffset, static_cast<uint32_t>(firstInstance));
 		++m_FrameStatistics.m_DrawCallCount;
 
 		// Advance to next batch
@@ -2017,30 +1952,30 @@ void Vulkanised::VulkanRenderer::recordCommands(uint32_t currentImage, const std
 	// INFINITE GRID, last: it's transparent, so it has to blend over whatever opaque geometry is already there
 	if (m_IsInfiniteGridVisible && m_InfiniteGridPipeline != VK_NULL_HANDLE)
 	{
-		vkCmdBindPipeline(m_CommandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, m_InfiniteGridPipeline);
+		vkCmdBindPipeline(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_InfiniteGridPipeline);
 		// Bound explicitly, since with zero instances the loop above never bound set 0
-		vkCmdBindDescriptorSets(m_CommandBuffers[currentImage], VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &m_DescriptorSets[currentImage], 0, nullptr);
-		vkCmdDraw(m_CommandBuffers[currentImage], 6, 1, 0, 0);	// One quad, two triangles, all made up in the vertex shader
+		vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &FrameToRecord.m_FrameDescriptorSet, 0, nullptr);
+		vkCmdDraw(CommandBuffer, 6, 1, 0, 0);	// One quad, two triangles, all made up in the vertex shader
 	}
 
 	// DEAR IMGUI, very last so it sits on top of everything (it binds its own pipeline, viewport and scissor)
 	if (m_ShouldRenderImGuiThisFrame)
 	{
-		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), m_CommandBuffers[currentImage]);
+		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), CommandBuffer);
 	}
 
-	vkCmdEndRenderPass(m_CommandBuffers[currentImage]);
+	vkCmdEndRenderPass(CommandBuffer);
 
 	if (m_ShouldCaptureScreenshotThisFrame)
 	{
-		recordScreenshotCopy(m_CommandBuffers[currentImage], m_SwapchainImages[currentImage].image);
+		recordScreenshotCopy(CommandBuffer, m_SwapchainImages[SwapchainImageIndex].image);
 	}
 	if (m_CanWriteTimestamps)
 	{
-		vkCmdWriteTimestamp(m_CommandBuffers[currentImage], VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_TimestampQueryPools[m_CurrentFrame], 1);
-		m_HasTimestampQueriesToRead[m_CurrentFrame] = true;
+		vkCmdWriteTimestamp(CommandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, FrameToRecord.m_TimestampQueryPool, 1);
+		FrameToRecord.m_HasTimestampQueriesToRead = true;
 	}
-	if (vkEndCommandBuffer(m_CommandBuffers[currentImage]) != VK_SUCCESS)
+	if (vkEndCommandBuffer(CommandBuffer) != VK_SUCCESS)
 	{
 		LOGNTHROW("failed to stop recording a command buffer");
 	}
