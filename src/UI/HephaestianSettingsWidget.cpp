@@ -35,10 +35,12 @@ namespace
 	enum class EnvironmentControlKind { ColourPicker, PositionDrag };
 }
 
-HephaestianSettingsWidget::HephaestianSettingsWidget(HephaestianSettingsManager& SettingsManagerToEdit, Scene& SceneToManage, Assets::AssetLibrary& AssetLibraryForSceneLoading)
+HephaestianSettingsWidget::HephaestianSettingsWidget(HephaestianSettingsManager& SettingsManagerToEdit, Scene& SceneToManage, Assets::AssetLibrary& AssetLibraryForSceneLoading,
+	Vulkanised::VulkanRenderer& RendererToInspect)
 	: m_SettingsManager(SettingsManagerToEdit)
 	, m_Scene(SceneToManage)
 	, m_AssetLibrary(AssetLibraryForSceneLoading)
+	, m_Renderer(RendererToInspect)
 {
 	// Every .json in assets/Scenes gets a load button. Looked up once, at startup.
 	const std::filesystem::path ScenesDirectory = Vulkanised::Utilities::File::getRuntimeAssetsDirectory() / "Scenes";
@@ -63,6 +65,7 @@ void HephaestianSettingsWidget::drawSettingsWindow()
 		ImGui::PushItemWidth(c_ControlWidthInPixels);	// Fixed: auto-resizing and window-relative widths would feed each other
 		drawSceneSection();
 		drawEnvironmentSection();
+		drawRendererStatisticsSection();
 		ImGui::PopItemWidth();
 	}
 	ImGui::End();
@@ -168,6 +171,39 @@ void HephaestianSettingsWidget::drawEnvironmentSection()
 	ImGui::SeparatorText("Light");
 	drawEnvironmentControl("Light position", EnvironmentControlKind::PositionDrag, SceneOverrides.m_LightWorldPosition, CurrentSettings.m_LightWorldPosition, &HephaestianSettings::m_LightWorldPosition);
 	drawEnvironmentControl("Light colour", EnvironmentControlKind::ColourPicker, SceneOverrides.m_LightColour, CurrentSettings.m_LightColour, &HephaestianSettings::m_LightColour);
+}
+
+void HephaestianSettingsWidget::drawRendererStatisticsSection()
+{
+	if (!ImGui::CollapsingHeader("Renderer statistics"))
+	{
+		return;
+	}
+
+	const Vulkanised::Rendering::FrameStatistics& Statistics = m_Renderer.getFrameStatistics();
+	const std::string GpuName{ m_Renderer.getGpuName() };
+	ImGui::TextDisabled("%s", GpuName.c_str());
+
+	const float FramesPerSecond = Statistics.m_FrameIntervalInMilliseconds > 0.0f ? 1000.0f / Statistics.m_FrameIntervalInMilliseconds : 0.0f;
+	ImGui::Text("Frame: %.2f ms (%.0f FPS)", Statistics.m_FrameIntervalInMilliseconds, FramesPerSecond);
+	ImGui::Text("CPU submit: %.3f ms   CPU waiting on GPU: %.3f ms", Statistics.m_CpuSubmitTimeInMilliseconds, Statistics.m_CpuWaitForGpuTimeInMilliseconds);
+	if (Statistics.m_IsGpuTimingAvailable)
+	{
+		ImGui::Text("GPU frame: %.3f ms", Statistics.m_GpuFrameTimeInMilliseconds);
+	}
+	else
+	{
+		ImGui::TextDisabled("GPU frame: not measurable on this GPU");
+	}
+
+	ImGui::Text("Instances: %u submitted, %u culled, %u drawn", Statistics.m_SubmittedInstanceCount, Statistics.m_CulledInstanceCount, Statistics.m_DrawnInstanceCount);
+	ImGui::Text("Draw calls: %u", Statistics.m_DrawCallCount);
+
+	constexpr double c_BytesPerMegabyte{ 1024.0 * 1024.0 };
+	const Vulkanised::Rendering::GpuMemoryStatistics MemoryStatistics = m_Renderer.getGpuMemoryStatistics();
+	ImGui::Text("GPU memory: %.1f MB used, %.1f MB reserved, %.0f MB budget", MemoryStatistics.m_UsedBytes / c_BytesPerMegabyte,
+		MemoryStatistics.m_ReservedBytes / c_BytesPerMegabyte, MemoryStatistics.m_DeviceLocalBudgetBytes / c_BytesPerMegabyte);
+	ImGui::Text("Allocations: %u resources in %u memory blocks", MemoryStatistics.m_AllocationCount, MemoryStatistics.m_DeviceMemoryBlockCount);
 }
 
 }

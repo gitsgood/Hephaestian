@@ -9,6 +9,8 @@
 #include <set>
 #include <algorithm>
 #include <optional>
+#include <chrono>
+#include <string_view>
 #include <filesystem>
 
 #include <stb_image.h>
@@ -20,6 +22,8 @@
 #include "Logger.h"
 #include "Vertex.h"
 #include "Mesh.h"
+#include "Rendering/GpuMemory.h"
+#include "Rendering/FrameStatistics.h"
 
 namespace Vulkanised
 {
@@ -75,6 +79,11 @@ public:
 	void setInfiniteGridVisible(bool ShouldInfiniteGridBeVisible) noexcept { m_IsInfiniteGridVisible = ShouldInfiniteGridBeVisible; }
 	[[nodiscard]] bool isInfiniteGridVisible() const noexcept { return m_IsInfiniteGridVisible; }
 
+	// - Diagnostics
+	[[nodiscard]] const Rendering::FrameStatistics& getFrameStatistics() const noexcept { return m_FrameStatistics; }
+	[[nodiscard]] Rendering::GpuMemoryStatistics getGpuMemoryStatistics() const { return m_GpuMemory.getStatistics(); }
+	[[nodiscard]] std::string_view getGpuName() const noexcept { return m_PhysicalDeviceProperties.deviceName; }
+
 	void cleanup() noexcept;
 
 	~VulkanRenderer();
@@ -99,11 +108,25 @@ private:
 
 	glm::vec3 m_ClearColour{ 0.6f, 0.65f, 0.4f };
 
+	// GPU memory: every buffer and image comes from here (VMA)
+	Rendering::GpuMemoryAllocator m_GpuMemory;
+
+	// Diagnostics
+	Rendering::FrameStatistics m_FrameStatistics;
+	VkPhysicalDeviceProperties m_PhysicalDeviceProperties{};
+	std::vector<VkQueryPool> m_TimestampQueryPools;			// One per frame in flight: [0] = start of the frame's commands, [1] = end
+	std::vector<bool> m_HasTimestampQueriesToRead;			// Whether that frame slot's pool holds results not read yet
+	bool m_CanWriteTimestamps{ false };
+	std::chrono::steady_clock::time_point m_PreviousSubmitFrameStartTime{};
+	bool m_WasPreviousFrameAScreenshotFrame{ false };
+	void createTimestampQueryPools();
+	void readFinishedTimestampQueries(int FrameSlotIndex);
+	void recordFrameStatistic(float& SmoothedValue, float NewValue) const noexcept;
+
 	// Screenshots
 	std::optional<std::filesystem::path> m_PendingScreenshotFilePath;
 	bool m_ShouldCaptureScreenshotThisFrame{ false };
-	VkBuffer m_ScreenshotBuffer{ VK_NULL_HANDLE };
-	VkDeviceMemory m_ScreenshotBufferMemory{ VK_NULL_HANDLE };
+	Rendering::AllocatedBuffer m_ScreenshotBuffer;
 	void prepareScreenshotBufferIfRequested();
 	void recordScreenshotCopy(VkCommandBuffer CommandBuffer, VkImage SwapchainImage);
 	void writeCapturedScreenshotToFile();
@@ -120,27 +143,20 @@ private:
 	bool m_IsInfiniteGridVisible{ false };
 	void createInfiniteGridPipeline();
 
-	// Unified Geometry Buffers (Replaces individual Mesh buffers)
-	VkBuffer m_GlobalVertexBuffer;
-	VkDeviceMemory m_GlobalVertexBufferMemory;
+	// Unified Geometry Buffers (Replaces individual Mesh buffers). Their capacity is their m_SizeInBytes.
+	Rendering::AllocatedBuffer m_GlobalVertexBuffer;
 	uint32_t m_CurrentVertexOffset{ 0 };
 
-	VkBuffer m_GlobalIndexBuffer;
-	VkDeviceMemory m_GlobalIndexBufferMemory;
+	Rendering::AllocatedBuffer m_GlobalIndexBuffer;
 	uint32_t m_CurrentIndexOffset{ 0 };
-
-	VkDeviceSize m_GlobalVertexBufferCapacityInBytes{ UNIFIED_BUFFER_SIZE };
-	VkDeviceSize m_GlobalIndexBufferCapacityInBytes{ UNIFIED_BUFFER_SIZE };
 
 	// Replaces the buffer with a bigger one (at least RequiredCapacityInBytes, usually double) and copies the used part over on the GPU.
 	// Waits for the device to go idle, so it's meant for load time, not the middle of gameplay.
-	void growUnifiedBuffer(VkBuffer& BufferToGrow, VkDeviceMemory& BufferMemoryToGrow, VkDeviceSize& BufferCapacityInBytes,
-		VkDeviceSize UsedBytesToKeep, VkDeviceSize RequiredCapacityInBytes, VkBufferUsageFlags BufferUsage, std::string_view BufferNameForLogging);
+	void growUnifiedBuffer(Rendering::AllocatedBuffer& BufferToGrow, VkDeviceSize UsedBytesToKeep, VkDeviceSize RequiredCapacityInBytes,
+		VkBufferUsageFlags BufferUsage, std::string_view BufferNameForLogging);
 
-	// SSBO for Instance Transforms (Replaces Push Constants)
-	std::vector<VkBuffer> m_SSBO;
-	std::vector<VkDeviceMemory> m_SSBOMemory;
-	std::vector<void*> m_SSBOMapped;
+	// SSBO for Instance Transforms (Replaces Push Constants), persistently mapped
+	std::vector<Rendering::AllocatedBuffer> m_SSBO;
 
 	// New internal setup functions
 	void createUnifiedBuffers();
@@ -180,9 +196,8 @@ private:
 	std::vector<VkFramebuffer> m_SwapchainFramebuffers;
 	std::vector<VkCommandBuffer> m_CommandBuffers;
 
-	VkImage m_DepthBufferImage;
-	VkDeviceMemory m_DepthBufferImageMemory;
-	VkImageView m_DepthBufferImageView;
+	Rendering::AllocatedImage m_DepthBuffer;
+	VkFormat m_DepthBufferFormat{ VK_FORMAT_UNDEFINED };
 
 	VkSampler m_TextureSampler;
 
@@ -196,23 +211,10 @@ private:
 	std::vector<VkDescriptorSet> m_DescriptorSets;
 	std::vector<VkDescriptorSet> m_SamplerDescriptorSets;
 
-	//std::vector<VkBuffer> m_UniformBuffer;
-	//std::vector<VkDeviceMemory> m_UniformBufferMemory;
-
-	std::vector<VkBuffer> m_VpUniformBuffer;
-	std::vector<VkDeviceMemory> m_VpUniformBufferMemory;
-
-	std::vector<VkBuffer> m_ModelDUniformBuffer;
-	std::vector<VkDeviceMemory> m_ModelDUniformBufferMemory;
-
-	//VkDeviceSize m_MinUniformBufferOffset;
-	//size_t m_ModelUniformAlignment;
-	//UboModel* m_ModelTransferSpace;
+	std::vector<Rendering::AllocatedBuffer> m_VpUniformBuffer;	// Persistently mapped
 
 	// - Assets
-	std::vector<VkImage> m_TextureImages;
-	std::vector<VkDeviceMemory> m_TextureImageMemory;
-	std::vector<VkImageView> m_TextureImageViews;
+	std::vector<Rendering::AllocatedImage> m_TextureImages;
 
 	// - Pipeline
 	VkPipeline m_GraphicsPipeline;
@@ -274,15 +276,14 @@ private:
 	// - Get functions
 	void getPhysicalDevice();
 
-	// - Allocate Functions
-	void allocateDynamicBufferTransferSpace();
-
 	// - Support functions
 	// -- Checker functions
 	bool checkInstanceExtensionSupport(const std::vector<const char*>* checkExtensions);
 	bool checkDeviceExtensionSupport(VkPhysicalDevice device);
 	bool checkValidationLayerSupport();
 	bool checkDeviceSuitable(VkPhysicalDevice device);
+	// Higher is better: discrete GPUs first, then the rest. Only called for devices that passed checkDeviceSuitable.
+	[[nodiscard]] static uint64_t scorePhysicalDevice(VkPhysicalDevice device);
 
 
 	// -- Getter functions
@@ -302,7 +303,6 @@ private:
 	VkFormat chooseSupportedFormat(const std::vector<VkFormat>& formats, VkImageTiling tiling, VkFormatFeatureFlags featureFlags) const;
 
 	// -- Create functions
-	VkImage createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags useFlags, VkMemoryPropertyFlags propFlags, VkDeviceMemory* imageMemory) const;
 	VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags) const;
 	VkShaderModule createShaderModule(const std::vector<uint32_t>& code) const;
 

@@ -23,6 +23,9 @@ find_package(Vulkan REQUIRED)
 # Dear ImGui (core + GLFW/Vulkan backends). After find_package(Vulkan), since its Vulkan backend links Vulkan::Vulkan
 add_subdirectory(external/imgui)
 
+# Vulkan Memory Allocator: every buffer and image gets its memory from it (also after find_package(Vulkan))
+add_subdirectory(external/vma)
+
 # In my windows I have GLM installed with Vulkan, but in case it isn't (my Mac, which has it via homebrew), we got this
 if(NOT MSVC)
     find_package(glm REQUIRED)
@@ -38,6 +41,8 @@ set(SOURCES
     include/Vulkanised/utils/VulkanUtils.h include/Vulkanised/utils/TimeUtils.h   include/Vulkanised/utils/FileUtils.h   src/utils/FileUtils.cpp   include/Vulkanised/utils/CrossPlatUtils.h
     include/Vulkanised/Logger.h            src/Logger.cpp
     include/Vulkanised/VulkanRenderer.h    src/VulkanRenderer.cpp
+    include/Vulkanised/Rendering/GpuMemory.h  src/Rendering/GpuMemory.cpp
+    include/Vulkanised/Rendering/FrameStatistics.h
     include/Vulkanised/Vertex.h
     include/Vulkanised/Mesh.h
 )
@@ -99,6 +104,7 @@ set(LIB_LIST
     glaze::glaze
     stb_image
     imgui       # PUBLIC like the rest, so whoever uses Vulkanised can build ImGui windows straight away
+    vma
 )
 
 if(NOT MSVC)

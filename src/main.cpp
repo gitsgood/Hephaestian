@@ -131,7 +131,7 @@ auto main(int ArgumentCount, char** Arguments) -> int
 		LOGE("The startup scene couldn't be loaded: pick one in the settings window.");
 	}
 
-	UI::HephaestianSettingsWidget SettingsWidget(SettingsManager, GameScene, AssetLibrary);
+	UI::HephaestianSettingsWidget SettingsWidget(SettingsManager, GameScene, AssetLibrary, renderer);
 
 	LOG("Controls: left click to capture the mouse, Escape to release it, WASD/QE to move, Shift to sprint, F12 for a screenshot. Settings and scenes are in the ImGui window.");
 
@@ -178,6 +178,12 @@ auto main(int ArgumentCount, char** Arguments) -> int
 			else if (!renderer.isScreenshotPending())
 			{
 				glfwSetWindowShouldClose(window.load().get(), GLFW_TRUE);	// The screenshot frame has been submitted: done
+
+				// Automated runs read their performance numbers from here
+				const Vulkanised::Rendering::FrameStatistics& Statistics = renderer.getFrameStatistics();
+				LOG("Frame statistics: frame {:.3f} ms, CPU submit {:.3f} ms, CPU waiting on GPU {:.3f} ms, GPU {:.3f} ms, instances {} submitted / {} culled / {} drawn, {} draw calls",
+					Statistics.m_FrameIntervalInMilliseconds, Statistics.m_CpuSubmitTimeInMilliseconds, Statistics.m_CpuWaitForGpuTimeInMilliseconds, Statistics.m_GpuFrameTimeInMilliseconds,
+					Statistics.m_SubmittedInstanceCount, Statistics.m_CulledInstanceCount, Statistics.m_DrawnInstanceCount, Statistics.m_DrawCallCount);
 			}
 		}
 		// While looking around, the (hidden, locked) cursor must not hover or click ImGui windows behind our back

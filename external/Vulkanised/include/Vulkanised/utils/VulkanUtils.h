@@ -11,7 +11,6 @@ namespace Vulkanised::Utilities::Vulkan
 {
 
     inline constexpr int c_MaxFrameDraws{ 2 };
-    inline constexpr int c_MaxObjects{ 2 };
     inline constexpr uint32_t c_MaxTextures{ 4096 };   // Size of the texture (sampler) descriptor pool. Imported models bring a LOT of textures.
 
     // using inline so header-only definition doesn't produce duplicate symbols when included from multiple translation units (TUs).
@@ -70,73 +69,6 @@ namespace Vulkanised::Utilities::Vulkan
         VkImage image;
         VkImageView imageView;
     };
-
-    [[nodiscard]] inline uint32_t findMemoryTypeIndex(VkPhysicalDevice physicalDevice, uint32_t allowedTypes, VkMemoryPropertyFlags properties) noexcept
-    {
-        // Get properties of physical device memory
-        VkPhysicalDeviceMemoryProperties memoryProperties;
-        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
-
-        uint32_t retVal{ 0 };
-        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
-        {
-            if ((allowedTypes & (1 << i))															// Index of memory type must correspond bit in allowedTypes
-                && (memoryProperties.memoryTypes[i].propertyFlags & properties) == properties)		// The desired property bit flags are part of memory type's property flag 
-            {
-                // This memory type is valid, so return its index
-                retVal = i;
-                return i;
-            }
-        }
-        return retVal;
-    }
-
-    inline void createBuffer(
-        VkPhysicalDevice physicalDevice, 
-        VkDevice logicalDevice, 
-        VkDeviceSize bufferSize, 
-        VkBufferUsageFlags bufferUsage, 
-        VkMemoryPropertyFlags bufferProperties, 
-        VkBuffer* buffer, 
-        VkDeviceMemory* bufferMemory)
-    {
-        // CREATE ~~VERTEX~~ ANY BUFFER
-        // Information to create a buffer (doesn't include assigning memory)
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = bufferSize;			                        // Size of buffer (size of 1 vertex * number of vertices)
-        bufferInfo.usage = bufferUsage;			                        // Multiple types of buffer possible, ~~we want Vertex buffer~~ 
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;				// Similar to swapchain images, can share vertex buffers
-
-        if (vkCreateBuffer(logicalDevice, &bufferInfo, nullptr, buffer) != VK_SUCCESS)
-        {
-            LOGNTHROW("failed to create a buffer");
-        }
-
-        // GET BUFFER MEMORY REQUIREMENTS
-        VkMemoryRequirements memRequirements{};
-        vkGetBufferMemoryRequirements(logicalDevice, *buffer, &memRequirements);
-
-        // ALLOCATE MEMORY TO BUFFER
-        VkMemoryAllocateInfo memoryAllocInfo{};
-        memoryAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        memoryAllocInfo.allocationSize = memRequirements.size;
-        memoryAllocInfo.memoryTypeIndex = findMemoryTypeIndex(physicalDevice, memRequirements.memoryTypeBits,		// Index of memory type on Physical device that has required bit flags
-            bufferProperties);			                                                            // VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT	: CPU can interact with memory
-                                                                                                    // VK_MEMORY_PROPERTY_HOST_COHERENT_BIT	: Allows placement of data straight into buffer after mapping (otherwise would have to specify manually)
-
-        // Allocate memory to VkDeviceMemory
-        if (vkAllocateMemory(logicalDevice, &memoryAllocInfo, nullptr, bufferMemory) != VK_SUCCESS)
-        {
-            LOGNTHROW("failed to allocate buffer memory");
-        }
-
-        // Allocate memory to given vertex buffer
-        if (vkBindBufferMemory(logicalDevice, *buffer, *bufferMemory, 0) != VK_SUCCESS)
-        {
-            LOGNTHROW("failed to bind buffer memory!");
-        }
-    }
 
     [[nodiscard]] inline VkCommandBuffer beginCommandBuffer(VkDevice device, VkCommandPool commandPool)
     {

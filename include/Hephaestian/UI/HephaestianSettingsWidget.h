@@ -17,11 +17,13 @@ namespace Hephaestian::UI
 *	  If the loaded scene overrides one of them, its control is redirected to the SCENE instead (and says so), and the
 *	  change is only kept on disk when "Save scene" is clicked.
 *	- one button per scene file found in assets/Scenes at startup, to load it, and "Save scene" for the loaded one
+*	- renderer statistics (frame times, draws, culling, GPU memory), collapsed by default
 */
 class HephaestianSettingsWidget
 {
 public:
-	HephaestianSettingsWidget(HephaestianSettingsManager& SettingsManagerToEdit, Scene& SceneToManage, Assets::AssetLibrary& AssetLibraryForSceneLoading);
+	HephaestianSettingsWidget(HephaestianSettingsManager& SettingsManagerToEdit, Scene& SceneToManage, Assets::AssetLibrary& AssetLibraryForSceneLoading,
+		Vulkanised::VulkanRenderer& RendererToInspect);
 
 	// Call between VulkanRenderer::beginImGuiFrame and SubmitFrame
 	void drawSettingsWindow();
@@ -29,10 +31,12 @@ public:
 private:
 	void drawSceneSection();
 	void drawEnvironmentSection();
+	void drawRendererStatisticsSection();
 
 	HephaestianSettingsManager& m_SettingsManager;
 	Scene& m_Scene;
 	Assets::AssetLibrary& m_AssetLibrary;
+	Vulkanised::VulkanRenderer& m_Renderer;
 
 	// Found once, at startup
 	std::vector<std::filesystem::path> m_SceneFilePaths;
