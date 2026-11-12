@@ -45,6 +45,8 @@ set(SOURCES
     include/Vulkanised/Rendering/FrameStatistics.h
     include/Vulkanised/Rendering/FrameResources.h
     include/Vulkanised/Rendering/ResourceUploader.h  src/Rendering/ResourceUploader.cpp
+    include/Vulkanised/Rendering/ColourSpace.h
+    include/Vulkanised/Rendering/TextureOptions.h
     include/Vulkanised/Vertex.h
     include/Vulkanised/Mesh.h
 )

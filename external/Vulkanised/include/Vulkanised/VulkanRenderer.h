@@ -26,6 +26,8 @@
 #include "Rendering/FrameStatistics.h"
 #include "Rendering/FrameResources.h"
 #include "Rendering/ResourceUploader.h"
+#include "Rendering/ColourSpace.h"
+#include "Rendering/TextureOptions.h"
 #include "utils/VulkanUtils.h"
 
 #include <array>
@@ -71,7 +73,8 @@ public:
 
 	// - Lighting (one point light; place it far away to make it behave like the sun)
 	void setLightPosition(const glm::vec3& NewLightWorldPosition) noexcept { m_UboViewProjection.lightPos = glm::vec4(NewLightWorldPosition, 1.0f); }
-	void setLightColour(const glm::vec3& NewLightColour) noexcept { m_UboViewProjection.lightColor = glm::vec4(NewLightColour, 1.0f); }
+	// Picked in sRGB (like every colour a person chooses), lit with in linear
+	void setLightColour(const glm::vec3& NewLightColour) noexcept { m_UboViewProjection.lightColor = glm::vec4(Rendering::convertSrgbColourToLinear(NewLightColour), 1.0f); }
 
 	// - Background
 	void setClearColour(const glm::vec3& NewClearColour) noexcept { m_ClearColour = NewClearColour; }
@@ -205,7 +208,8 @@ private:
 	Rendering::AllocatedImage m_DepthBuffer;
 	VkFormat m_DepthBufferFormat{ VK_FORMAT_UNDEFINED };
 
-	VkSampler m_TextureSampler;
+	VkSampler m_SmoothTextureSampler{ VK_NULL_HANDLE };		// Trilinear + anisotropic (TextureFiltering::Smooth)
+	VkSampler m_PixelatedTextureSampler{ VK_NULL_HANDLE };	// Nearest (TextureFiltering::Pixelated)
 
 	// - Descriptors
 	VkDescriptorSetLayout m_DescriptorSetLayout;
@@ -225,7 +229,9 @@ private:
 
 
 	// - Utility
-	VkFormat m_SwapchainImageFormat;
+	VkFormat m_SwapchainImageFormat;		// sRGB when available: the scene is drawn in this
+	VkFormat m_SwapchainOverlayFormat;		// Its UNORM twin when the swapchain allows a second view format, otherwise the same
+	bool m_IsSwapchainMutableFormatSupported{ false };
 	VkExtent2D m_SwapchainExtent;
 
 	// Validation layer trackers
@@ -249,7 +255,7 @@ private:
 	void createDescriptorSetLayout();
 	void createGraphicsPipeline();
 	void createDepthBufferImage();
-	void createTextureSampler();
+	void createTextureSamplers();
 
 	void createDescriptorPool();
 
@@ -287,6 +293,8 @@ private:
 
 	// -- Choose functions
 	VkSurfaceFormatKHR chooseBestSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats);
+	[[nodiscard]] static VkFormat getUnormFormatOfSrgbFormat(VkFormat SrgbFormat) noexcept;
+	[[nodiscard]] bool canGenerateMipmapsForFormat(VkFormat TextureFormat) const;
 	VkPresentModeKHR chooseBestPresentationMode(const std::vector<VkPresentModeKHR>& presentationModes);
 	VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& surfaceCapabilities);
 	VkFormat chooseSupportedFormat(const std::vector<VkFormat>& formats, VkImageTiling tiling, VkFormatFeatureFlags featureFlags) const;
@@ -296,20 +304,21 @@ private:
 	VkShaderModule createShaderModule(const std::vector<uint32_t>& code) const;
 
 	public:
-	int createTextureImage(std::string_view fileName);
-	int createTexture(std::string_view fileName);
-	int createTextureDescriptor(VkImageView textureImage);
+	int createTextureImage(std::string_view fileName, const Rendering::TextureOptions& Options);
+	// Loads an image file (relative names come from assets/Textures). Returns the texture identifier.
+	int createTexture(std::string_view fileName, const Rendering::TextureOptions& Options = {});
+	int createTextureDescriptor(VkImageView textureImage, VkSampler TextureSampler);
 
 	// - Textures that don't come from a file in assets/Textures (model importers need these)
 	// Raw 8-bit RGBA pixels, WidthInPixels * HeightInPixels * 4 bytes. Returns the texture identifier.
-	int createTextureFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels);
+	int createTextureFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels, const Rendering::TextureOptions& Options = {});
 	// A whole PNG/JPG/... file that's already in memory (e.g. embedded in a .glb). Falls back to white if it can't be decoded.
-	int createTextureFromEncodedImageInMemory(const unsigned char* EncodedImageBytes, size_t EncodedImageByteCount);
+	int createTextureFromEncodedImageInMemory(const unsigned char* EncodedImageBytes, size_t EncodedImageByteCount, const Rendering::TextureOptions& Options = {});
 	// 1x1 white texture, for materials with no texture (the shader multiplies it by the vertex colour). Created on first use.
 	[[nodiscard]] uint32_t getDefaultWhiteTextureIdentifier();
 	private:
-	int createTextureImageFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels);
-	int createTextureViewAndDescriptorForImage(int TextureImageIndex);
+	int createTextureImageFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels, const Rendering::TextureOptions& Options);
+	int createTextureViewAndDescriptorForImage(int TextureImageIndex, const Rendering::TextureOptions& Options);
 	std::optional<uint32_t> m_DefaultWhiteTextureIdentifier;
 	// -- Loader Functions
 	stbi_uc* loadTextureFile(std::string_view fileName, int* width, int* height, VkDeviceSize* imageSize);

@@ -66,8 +66,9 @@ namespace Vulkanised::Utilities::Vulkan
 
     struct SwapchainImage
     {
-        VkImage image;
-        VkImageView imageView;
+        VkImage m_Image{ VK_NULL_HANDLE };
+        VkImageView m_ImageView{ VK_NULL_HANDLE };          // In the swapchain format (sRGB): the scene is drawn through this one
+        VkImageView m_OverlayImageView{ VK_NULL_HANDLE };   // Same image as UNORM, for already-sRGB colours (grid, ImGui). Null if not supported.
     };
 
     // Everything one image layout transition (synchronization2) needs to know

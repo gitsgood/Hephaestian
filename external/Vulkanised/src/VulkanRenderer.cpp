@@ -39,7 +39,7 @@ int Vulkanised::VulkanRenderer::init(GLFWwindow* newWindow)
 		createDepthBufferImage();
 		// Uploads (geometry, textures) go to the GPU in batches through here
 		m_ResourceUploader.initialise(m_MainDevice.logicalDevice, m_GraphicsQueue, static_cast<uint32_t>(getQueueFamilies(m_MainDevice.physicalDevice).graphicsFamily), m_GpuMemory);
-		createTextureSampler();
+		createTextureSamplers();
 		createUnifiedBuffers();
 		createDescriptorPool();
 		createFrameResources();
@@ -609,7 +609,7 @@ void Vulkanised::VulkanRenderer::initialiseImGui(GLFWwindow* WindowToReceiveImGu
 	ImGuiVulkanInitInfo.UseDynamicRendering = true;
 	ImGuiVulkanInitInfo.PipelineInfoMain.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
 	ImGuiVulkanInitInfo.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-	ImGuiVulkanInitInfo.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &m_SwapchainImageFormat;	// ImGui copies it
+	ImGuiVulkanInitInfo.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &m_SwapchainOverlayFormat;	// Overlay pass (UNORM view). ImGui copies it.
 	ImGuiVulkanInitInfo.PipelineInfoMain.PipelineRenderingCreateInfo.depthAttachmentFormat = m_DepthBufferFormat;
 	ImGuiVulkanInitInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
 	ImGuiVulkanInitInfo.CheckVkResultFn = [](VkResult ImGuiVulkanResult)
@@ -787,10 +787,10 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 		vkDestroyDescriptorSetLayout(m_MainDevice.logicalDevice, m_SamplerSetLayout, nullptr);
 		m_SamplerSetLayout = VK_NULL_HANDLE;
 	}
-	if (m_TextureSampler != VK_NULL_HANDLE)
+	for (VkSampler* CurrentSampler : { &m_SmoothTextureSampler, &m_PixelatedTextureSampler })
 	{
-		vkDestroySampler(m_MainDevice.logicalDevice, m_TextureSampler, nullptr);
-		m_TextureSampler = VK_NULL_HANDLE;
+		vkDestroySampler(m_MainDevice.logicalDevice, *CurrentSampler, nullptr);
+		*CurrentSampler = VK_NULL_HANDLE;
 	}
 
 	for (Rendering::AllocatedImage& CurrentTextureImage : m_TextureImages)
@@ -1054,8 +1054,24 @@ void Vulkanised::VulkanRenderer::createLogicalDevice()
 	deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 	deviceCreateInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());							// Number of Queue Create infos
 	deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();													// List of queue create infos so device can create required queues
-	deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(Utilities::Vulkan::deviceExtensions.size());				// Number of enabled logical device extensions
-	deviceCreateInfo.ppEnabledExtensionNames = Utilities::Vulkan::deviceExtensions.data();									// List of enabled logical device extensions
+	// Required extensions, plus the optional ones this GPU has
+	std::vector<const char*> EnabledDeviceExtensions(Utilities::Vulkan::deviceExtensions.begin(), Utilities::Vulkan::deviceExtensions.end());
+	uint32_t AvailableExtensionCount{ 0 };
+	vkEnumerateDeviceExtensionProperties(m_MainDevice.physicalDevice, nullptr, &AvailableExtensionCount, nullptr);
+	std::vector<VkExtensionProperties> AvailableExtensions(AvailableExtensionCount);
+	vkEnumerateDeviceExtensionProperties(m_MainDevice.physicalDevice, nullptr, &AvailableExtensionCount, AvailableExtensions.data());
+	m_IsSwapchainMutableFormatSupported = std::ranges::any_of(AvailableExtensions, [](const VkExtensionProperties& CurrentExtension)
+		{ return strcmp(CurrentExtension.extensionName, VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME) == 0; });
+	if (m_IsSwapchainMutableFormatSupported)
+	{
+		EnabledDeviceExtensions.push_back(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME);	// sRGB + UNORM views of the swapchain images
+	}
+	else
+	{
+		LOGW("This GPU can't view swapchain images in two formats: the grid and ImGui will look washed out on the sRGB swapchain.");
+	}
+	deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(EnabledDeviceExtensions.size());
+	deviceCreateInfo.ppEnabledExtensionNames = EnabledDeviceExtensions.data();
 
 	// Physical Device Features the logical device will be using (checkDeviceSuitable already made sure they're all there)
 	// - Vulkan 1.3: dynamic rendering (no render pass/framebuffer objects) and synchronization2 (clearer barriers)
@@ -1189,6 +1205,23 @@ void Vulkanised::VulkanRenderer::createSwapchain()
 	// If old swapchain being destroyed and this one replaces it, then link old one to quickly hand over responsibilities
 	swapchainCreateInfo.oldSwapchain = VK_NULL_HANDLE;
 
+	// The scene is drawn through an sRGB view (lighting in linear space, encoded on write). The grid and ImGui work with
+	// colours that are ALREADY sRGB, so they are drawn through a second, UNORM view of the same images, which stores their
+	// numbers untouched (through the sRGB view they would come out washed out). Needs a mutable-format swapchain.
+	const VkFormat OverlayFormat = getUnormFormatOfSrgbFormat(surfaceFormat.format);
+	const std::array<VkFormat, 2> SwapchainViewFormats{ surfaceFormat.format, OverlayFormat };
+	VkImageFormatListCreateInfo SwapchainViewFormatList{};
+	m_SwapchainOverlayFormat = surfaceFormat.format;
+	if (m_IsSwapchainMutableFormatSupported && OverlayFormat != surfaceFormat.format)
+	{
+		SwapchainViewFormatList.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+		SwapchainViewFormatList.viewFormatCount = static_cast<uint32_t>(SwapchainViewFormats.size());
+		SwapchainViewFormatList.pViewFormats = SwapchainViewFormats.data();
+		swapchainCreateInfo.flags = VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
+		swapchainCreateInfo.pNext = &SwapchainViewFormatList;
+		m_SwapchainOverlayFormat = OverlayFormat;
+	}
+
 	// Create actual swapchain
 	if (vkCreateSwapchainKHR(m_MainDevice.logicalDevice, &swapchainCreateInfo, nullptr, &m_Swapchain) != VK_SUCCESS)
 	{
@@ -1207,13 +1240,24 @@ void Vulkanised::VulkanRenderer::createSwapchain()
 
 	for (VkImage image : images)
 	{
-		// Store image handle
-		Utilities::Vulkan::SwapchainImage swapchainImage{};
-		swapchainImage.image = image;
-		swapchainImage.imageView = createImageView(image, m_SwapchainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT);
+		Utilities::Vulkan::SwapchainImage NewSwapchainImage{};
+		NewSwapchainImage.m_Image = image;
+		NewSwapchainImage.m_ImageView = createImageView(image, m_SwapchainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT);
+		if (m_SwapchainOverlayFormat != m_SwapchainImageFormat)
+		{
+			NewSwapchainImage.m_OverlayImageView = createImageView(image, m_SwapchainOverlayFormat, VK_IMAGE_ASPECT_COLOR_BIT);
+		}
+		m_SwapchainImages.push_back(NewSwapchainImage);
+	}
+}
 
-		// Add to swapchain image list
-		m_SwapchainImages.push_back(swapchainImage);
+VkFormat Vulkanised::VulkanRenderer::getUnormFormatOfSrgbFormat(VkFormat SrgbFormat) noexcept
+{
+	switch (SrgbFormat)
+	{
+	case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
+	case VK_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+	default:					  return SrgbFormat;	// Not an sRGB format (or one we don't pair up): no separate overlay view
 	}
 }
 
@@ -1572,7 +1616,7 @@ void Vulkanised::VulkanRenderer::createInfiniteGridPipeline()
 	VkPipelineRenderingCreateInfo PipelineRenderingCreateInfo{};	// Same attachments as the main pipeline (dynamic rendering)
 	PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
 	PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-	PipelineRenderingCreateInfo.pColorAttachmentFormats = &m_SwapchainImageFormat;
+	PipelineRenderingCreateInfo.pColorAttachmentFormats = &m_SwapchainOverlayFormat;	// Drawn in the overlay pass, through the UNORM view
 	PipelineRenderingCreateInfo.depthAttachmentFormat = m_DepthBufferFormat;
 	InfiniteGridPipelineCreateInfo.pNext = &PipelineRenderingCreateInfo;
 	InfiniteGridPipelineCreateInfo.renderPass = VK_NULL_HANDLE;
@@ -1607,28 +1651,38 @@ void Vulkanised::VulkanRenderer::createDepthBufferImage()
 	m_DepthBuffer = m_GpuMemory.createImage(DepthImageCreateInfo, VK_IMAGE_ASPECT_DEPTH_BIT, "Depth buffer");
 }
 
-void Vulkanised::VulkanRenderer::createTextureSampler()
+void Vulkanised::VulkanRenderer::createTextureSamplers()
 {
-	// Sampler Creation Info
-	VkSamplerCreateInfo samplerCreateInfo = {};
-	samplerCreateInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	samplerCreateInfo.magFilter = VK_FILTER_LINEAR;						// How to render when image is magnified on screen
-	samplerCreateInfo.minFilter = VK_FILTER_LINEAR;						// How to render when image is minified on screen
-	samplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;	// How to handle texture wrap in U (x) direction
-	samplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;	// How to handle texture wrap in V (y) direction
-	samplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;	// How to handle texture wrap in W (z) direction
-	samplerCreateInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;	// Border beyond texture (only workds for border clamp)
-	samplerCreateInfo.unnormalizedCoordinates = VK_FALSE;				// Whether coords should be normalized (between 0 and 1)
-	samplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;		// Mipmap interpolation mode
-	samplerCreateInfo.mipLodBias = 0.0f;								// Level of Details bias for mip level
-	samplerCreateInfo.minLod = 0.0f;									// Minimum Level of Detail to pick mip level
-	samplerCreateInfo.maxLod = 0.0f;									// Maximum Level of Detail to pick mip level
-	samplerCreateInfo.anisotropyEnable = VK_TRUE;						// Enable Anisotropy
-	samplerCreateInfo.maxAnisotropy = 16;								// Anisotropy sample level
+	// Shared by every texture: each one picks one of these two when it's created (TextureOptions::m_Filtering)
+	VkSamplerCreateInfo SamplerCreateInfo{};
+	SamplerCreateInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	SamplerCreateInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	SamplerCreateInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	SamplerCreateInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	SamplerCreateInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+	SamplerCreateInfo.minLod = 0.0f;
+	SamplerCreateInfo.maxLod = VK_LOD_CLAMP_NONE;	// Every mip level the texture has (this was 0, so mip 0 was the only one ever used)
 
-	if (vkCreateSampler(m_MainDevice.logicalDevice, &samplerCreateInfo, nullptr, &m_TextureSampler) != VK_SUCCESS)
+	// - Smooth: trilinear (blends between mip levels too) plus anisotropic filtering for surfaces seen at grazing angles
+	SamplerCreateInfo.magFilter = VK_FILTER_LINEAR;
+	SamplerCreateInfo.minFilter = VK_FILTER_LINEAR;
+	SamplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	SamplerCreateInfo.anisotropyEnable = VK_TRUE;
+	SamplerCreateInfo.maxAnisotropy = std::min(16.0f, m_PhysicalDeviceProperties.limits.maxSamplerAnisotropy);
+	if (vkCreateSampler(m_MainDevice.logicalDevice, &SamplerCreateInfo, nullptr, &m_SmoothTextureSampler) != VK_SUCCESS)
 	{
-		LOGNTHROW("Filed to create a Texture Sampler!");
+		LOGNTHROW("Failed to create the smooth texture sampler");
+	}
+
+	// - Pixelated: nearest texel, nearest mip, no anisotropy: hard pixel edges up close, no shimmering far away
+	SamplerCreateInfo.magFilter = VK_FILTER_NEAREST;
+	SamplerCreateInfo.minFilter = VK_FILTER_NEAREST;
+	SamplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+	SamplerCreateInfo.anisotropyEnable = VK_FALSE;
+	SamplerCreateInfo.maxAnisotropy = 1.0f;
+	if (vkCreateSampler(m_MainDevice.logicalDevice, &SamplerCreateInfo, nullptr, &m_PixelatedTextureSampler) != VK_SUCCESS)
+	{
+		LOGNTHROW("Failed to create the pixelated texture sampler");
 	}
 }
 
@@ -1677,7 +1731,8 @@ void Vulkanised::VulkanRenderer::cleanupSwapchain()
 	// 1. Swapchain image views (the images themselves belong to the swapchain)
 	for (Utilities::Vulkan::SwapchainImage& CurrentSwapchainImage : m_SwapchainImages)
 	{
-		vkDestroyImageView(m_MainDevice.logicalDevice, CurrentSwapchainImage.imageView, nullptr);
+		vkDestroyImageView(m_MainDevice.logicalDevice, CurrentSwapchainImage.m_ImageView, nullptr);
+		vkDestroyImageView(m_MainDevice.logicalDevice, CurrentSwapchainImage.m_OverlayImageView, nullptr);	// Null (ignored) without a separate overlay view
 	}
 	m_SwapchainImages.clear();
 
@@ -1732,7 +1787,9 @@ bool Vulkanised::VulkanRenderer::doesSwapchainNeedRecreation() const
 void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, const std::vector<RenderInstance>& instances)
 {
 	const VkCommandBuffer CommandBuffer = FrameToRecord.m_CommandBuffer;
-	const VkImage SwapchainImage = m_SwapchainImages[SwapchainImageIndex].image;
+	const VkImage SwapchainImage = m_SwapchainImages[SwapchainImageIndex].m_Image;
+	const bool IsInfiniteGridDrawn = m_IsInfiniteGridVisible && m_InfiniteGridPipeline != VK_NULL_HANDLE;
+	const bool IsOverlayPassNeeded = IsInfiniteGridDrawn || m_ShouldRenderImGuiThisFrame;
 
 	// Re-recorded from scratch every frame, so the driver can optimise it for exactly one submit
 	VkCommandBufferBeginInfo CommandBufferBeginInfo{};
@@ -1771,18 +1828,21 @@ void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& Frame
 	// 2. BEGIN RENDERING straight into the swapchain image and the depth buffer (no render pass or framebuffer objects)
 	VkRenderingAttachmentInfo ColourAttachment{};
 	ColourAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	ColourAttachment.imageView = m_SwapchainImages[SwapchainImageIndex].imageView;
+	ColourAttachment.imageView = m_SwapchainImages[SwapchainImageIndex].m_ImageView;	// sRGB view: lighting results are linear
 	ColourAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	ColourAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	ColourAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	ColourAttachment.clearValue.color = { { m_ClearColour.r, m_ClearColour.g, m_ClearColour.b, 1.0f } };
+	// The clear colour is picked in sRGB: converted to linear, the sRGB view encodes it straight back to the exact picked value
+	const glm::vec3 LinearClearColour = Rendering::convertSrgbColourToLinear(m_ClearColour);
+	ColourAttachment.clearValue.color = { { LinearClearColour.r, LinearClearColour.g, LinearClearColour.b, 1.0f } };
 
 	VkRenderingAttachmentInfo DepthAttachment{};
 	DepthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
 	DepthAttachment.imageView = m_DepthBuffer.m_ImageView;
 	DepthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	DepthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	DepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;	// Nobody reads depth after the frame
+	// The overlay pass (grid, ImGui) keeps testing against the scene's depth, otherwise nobody reads depth after the frame
+	DepthAttachment.storeOp = IsOverlayPassNeeded ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	DepthAttachment.clearValue.depthStencil = { 1.0f, 0 };
 
 	VkRenderingInfo RenderingInfo{};
@@ -1859,22 +1919,57 @@ void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& Frame
 		firstInstance += instanceCount;
 	}
 
-	// INFINITE GRID, last: it's transparent, so it has to blend over whatever opaque geometry is already there
-	if (m_IsInfiniteGridVisible && m_InfiniteGridPipeline != VK_NULL_HANDLE)
-	{
-		vkCmdBindPipeline(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_InfiniteGridPipeline);
-		// Bound explicitly, since with zero instances the loop above never bound set 0
-		vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &FrameToRecord.m_FrameDescriptorSet, 0, nullptr);
-		vkCmdDraw(CommandBuffer, 6, 1, 0, 0);	// One quad, two triangles, all made up in the vertex shader
-	}
-
-	// DEAR IMGUI, very last so it sits on top of everything (it binds its own pipeline, viewport and scissor)
-	if (m_ShouldRenderImGuiThisFrame)
-	{
-		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), CommandBuffer);
-	}
-
 	vkCmdEndRendering(CommandBuffer);
+
+	// 2b. OVERLAY: the grid and ImGui, drawn through the UNORM view of the same image (their colours are already sRGB, the
+	//     sRGB view would encode them a second time). Depth is kept from the scene, so the grid still hides behind meshes.
+	if (IsOverlayPassNeeded)
+	{
+		// The scene's colour and depth writes land before the overlay loads them
+		VkMemoryBarrier2 SceneToOverlayBarrier{};
+		SceneToOverlayBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+		SceneToOverlayBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+		SceneToOverlayBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		SceneToOverlayBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+		SceneToOverlayBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+			| VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		VkDependencyInfo SceneToOverlayDependency{};
+		SceneToOverlayDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+		SceneToOverlayDependency.memoryBarrierCount = 1;
+		SceneToOverlayDependency.pMemoryBarriers = &SceneToOverlayBarrier;
+		vkCmdPipelineBarrier2(CommandBuffer, &SceneToOverlayDependency);
+
+		const Utilities::Vulkan::SwapchainImage& CurrentSwapchainImage = m_SwapchainImages[SwapchainImageIndex];
+		VkRenderingAttachmentInfo OverlayColourAttachment = ColourAttachment;
+		OverlayColourAttachment.imageView = CurrentSwapchainImage.m_OverlayImageView != VK_NULL_HANDLE ? CurrentSwapchainImage.m_OverlayImageView : CurrentSwapchainImage.m_ImageView;
+		OverlayColourAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		VkRenderingAttachmentInfo OverlayDepthAttachment = DepthAttachment;
+		OverlayDepthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		OverlayDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;	// Nobody reads depth after this
+
+		VkRenderingInfo OverlayRenderingInfo = RenderingInfo;
+		OverlayRenderingInfo.pColorAttachments = &OverlayColourAttachment;
+		OverlayRenderingInfo.pDepthAttachment = &OverlayDepthAttachment;
+		vkCmdBeginRendering(CommandBuffer, &OverlayRenderingInfo);
+		vkCmdSetViewport(CommandBuffer, 0, 1, &Viewport);
+		vkCmdSetScissor(CommandBuffer, 0, 1, &Scissor);
+
+		// INFINITE GRID: transparent, so it blends over whatever opaque geometry is already there
+		if (IsInfiniteGridDrawn)
+		{
+			vkCmdBindPipeline(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_InfiniteGridPipeline);
+			vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &FrameToRecord.m_FrameDescriptorSet, 0, nullptr);
+			vkCmdDraw(CommandBuffer, 6, 1, 0, 0);	// One quad, two triangles, all made up in the vertex shader
+		}
+
+		// DEAR IMGUI, very last so it sits on top of everything (it binds its own pipeline, viewport and scissor)
+		if (m_ShouldRenderImGuiThisFrame)
+		{
+			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), CommandBuffer);
+		}
+
+		vkCmdEndRendering(CommandBuffer);
+	}
 
 	// 3. HAND THE IMAGE TO THE PRESENTATION ENGINE (copying it out first if a screenshot was asked for)
 	if (m_ShouldCaptureScreenshotThisFrame)
@@ -2279,27 +2374,34 @@ Utilities::Vulkan::SwapchainDetails Vulkanised::VulkanRenderer::getSwapchainDeta
 	return swapchainDetails;
 }
 
-// Best format is subjective, but ours will be:
-// Format		:	VK_FORMAT_R8G8B8A8_UNORM (VK_FORMAT_B8G8R8_UNORM as backup)
-// colorSpace	:	VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+// An 8-bit sRGB format first: the GPU then encodes our LINEAR lighting results to sRGB on write, which is what the screen
+// expects. UNORM (the old choice) stores the numbers as they are, so lighting happened in "gamma space": too dark and harsh.
 VkSurfaceFormatKHR Vulkanised::VulkanRenderer::chooseBestSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats)
 {
 	// If only 1 format available AND is undefined, then this means ALL formats are available (no restrictions)
 	if (formats.size() == 1 && formats[0].format == VK_FORMAT_UNDEFINED)
 	{
-		return { VK_FORMAT_R8G8B8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
+		return { VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
 	}
 
-	// If restricted, search for optimal format
-	for (const auto& format : formats)
+	constexpr std::array<VkFormat, 4> c_FormatsInOrderOfPreference{ VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM };
+	for (const VkFormat CurrentPreferredFormat : c_FormatsInOrderOfPreference)
 	{
-		if ((format.format == VK_FORMAT_R8G8B8A8_UNORM || format.format == VK_FORMAT_B8G8R8_UNORM) && format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+		for (const VkSurfaceFormatKHR& CurrentSurfaceFormat : formats)
 		{
-			return format;
+			if (CurrentSurfaceFormat.format == CurrentPreferredFormat && CurrentSurfaceFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+			{
+				if (getUnormFormatOfSrgbFormat(CurrentPreferredFormat) == CurrentPreferredFormat)
+				{
+					LOGW("No sRGB swapchain format available, lighting will be computed in gamma space (colours will look off).");
+				}
+				return CurrentSurfaceFormat;
+			}
 		}
 	}
 
 	// If can't find optimal format, then just return first format
+	LOGW("None of the usual 8-bit swapchain formats is available, using VkFormat {}.", static_cast<int>(formats[0].format));
 	return formats[0];
 }
 
@@ -2417,14 +2519,14 @@ VkShaderModule Vulkanised::VulkanRenderer::createShaderModule(const std::vector<
 	return shaderModule;
 }
 
-int Vulkanised::VulkanRenderer::createTextureImage(std::string_view fileName)
+int Vulkanised::VulkanRenderer::createTextureImage(std::string_view fileName, const Rendering::TextureOptions& Options)
 {
 	// Load image file
 	int width, height;
 	VkDeviceSize imageSize;
 	stbi_uc* imageData = loadTextureFile(fileName, &width, &height, &imageSize);
 
-	const int CreatedTextureImageIndex = createTextureImageFromRgbaPixels(imageData, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+	const int CreatedTextureImageIndex = createTextureImageFromRgbaPixels(imageData, static_cast<uint32_t>(width), static_cast<uint32_t>(height), Options);
 
 	// Free original image data
 	stbi_image_free(imageData);
@@ -2432,29 +2534,39 @@ int Vulkanised::VulkanRenderer::createTextureImage(std::string_view fileName)
 	return CreatedTextureImageIndex;
 }
 
-int Vulkanised::VulkanRenderer::createTextureImageFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels)
+int Vulkanised::VulkanRenderer::createTextureImageFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels, const Rendering::TextureOptions& Options)
 {
-	const uint32_t width{ WidthInPixels };
-	const uint32_t height{ HeightInPixels };
 	const VkDeviceSize imageSize{ static_cast<VkDeviceSize>(WidthInPixels) * HeightInPixels * 4 };
+
+	// Colour textures are stored as sRGB: sampling them returns LINEAR values, which is what the lighting maths needs
+	const VkFormat TextureFormat = Options.m_ColourSpace == Rendering::TextureColourSpace::Colour ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+
+	// A full mip chain (each level half the size of the previous, down to 1x1), built on the GPU by the uploader. Needs the
+	// format to support linearly filtered blits, which every desktop GPU does for these two.
+	uint32_t MipLevelCount{ 1 };
+	if (Options.m_ShouldGenerateMipmaps && canGenerateMipmapsForFormat(TextureFormat))
+	{
+		MipLevelCount = static_cast<uint32_t>(std::floor(std::log2(std::max(WidthInPixels, HeightInPixels)))) + 1;
+	}
 
 	// Create image to hold final texture (and the view the shaders read it through)
 	VkImageCreateInfo TextureImageCreateInfo{};
 	TextureImageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 	TextureImageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
-	TextureImageCreateInfo.extent = { width, height, 1 };
-	TextureImageCreateInfo.mipLevels = 1;
+	TextureImageCreateInfo.extent = { WidthInPixels, HeightInPixels, 1 };
+	TextureImageCreateInfo.mipLevels = MipLevelCount;
 	TextureImageCreateInfo.arrayLayers = 1;
-	TextureImageCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+	TextureImageCreateInfo.format = TextureFormat;
 	TextureImageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
 	TextureImageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	TextureImageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	TextureImageCreateInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+		| (MipLevelCount > 1 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);	// Each mip level is blitted from the one above it
 	TextureImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 	TextureImageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	Rendering::AllocatedImage TextureImage = m_GpuMemory.createImage(TextureImageCreateInfo, VK_IMAGE_ASPECT_COLOR_BIT, "Texture");
 
-	// The pixels are copied into staging memory right now (the caller may free them), and reach the image, ready to be
-	// sampled, with the next upload batch (before the next frame)
+	// The pixels are copied into staging memory right now (the caller may free them), and reach the image, mips and all,
+	// ready to be sampled, with the next upload batch (before the next frame)
 	m_ResourceUploader.queueTextureUpload(TextureImage, RgbaPixels, imageSize);
 
 	// Add texture data to vector for reference
@@ -2464,23 +2576,31 @@ int Vulkanised::VulkanRenderer::createTextureImageFromRgbaPixels(const unsigned 
 	return static_cast<int>(m_TextureImages.size() - 1);
 }
 
-int Vulkanised::VulkanRenderer::createTexture(std::string_view fileName)
+bool Vulkanised::VulkanRenderer::canGenerateMipmapsForFormat(VkFormat TextureFormat) const
 {
-	// Create Texture Image and get its location in array
-	return createTextureViewAndDescriptorForImage(createTextureImage(fileName));
+	constexpr VkFormatFeatureFlags c_RequiredFeatures{ VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT };
+	VkFormatProperties FormatProperties{};
+	vkGetPhysicalDeviceFormatProperties(m_MainDevice.physicalDevice, TextureFormat, &FormatProperties);
+	return (FormatProperties.optimalTilingFeatures & c_RequiredFeatures) == c_RequiredFeatures;
 }
 
-int Vulkanised::VulkanRenderer::createTextureFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels)
+int Vulkanised::VulkanRenderer::createTexture(std::string_view fileName, const Rendering::TextureOptions& Options)
+{
+	// Create Texture Image and get its location in array
+	return createTextureViewAndDescriptorForImage(createTextureImage(fileName, Options), Options);
+}
+
+int Vulkanised::VulkanRenderer::createTextureFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels, const Rendering::TextureOptions& Options)
 {
 	if (RgbaPixels == nullptr || WidthInPixels == 0 || HeightInPixels == 0)
 	{
 		LOGW("Tried to create a texture from no pixels, using the default white texture instead.");
 		return static_cast<int>(getDefaultWhiteTextureIdentifier());
 	}
-	return createTextureViewAndDescriptorForImage(createTextureImageFromRgbaPixels(RgbaPixels, WidthInPixels, HeightInPixels));
+	return createTextureViewAndDescriptorForImage(createTextureImageFromRgbaPixels(RgbaPixels, WidthInPixels, HeightInPixels, Options), Options);
 }
 
-int Vulkanised::VulkanRenderer::createTextureFromEncodedImageInMemory(const unsigned char* EncodedImageBytes, size_t EncodedImageByteCount)
+int Vulkanised::VulkanRenderer::createTextureFromEncodedImageInMemory(const unsigned char* EncodedImageBytes, size_t EncodedImageByteCount, const Rendering::TextureOptions& Options)
 {
 	// stb_image takes an int for the size, so anything above 2GB can't be decoded in one go (and shouldn't be a texture anyway)
 	if (EncodedImageBytes == nullptr || EncodedImageByteCount == 0 || EncodedImageByteCount > static_cast<size_t>(std::numeric_limits<int>::max()))
@@ -2499,7 +2619,7 @@ int Vulkanised::VulkanRenderer::createTextureFromEncodedImageInMemory(const unsi
 		return static_cast<int>(getDefaultWhiteTextureIdentifier());
 	}
 
-	const int CreatedTextureIdentifier = createTextureFromRgbaPixels(DecodedRgbaPixels, static_cast<uint32_t>(DecodedWidthInPixels), static_cast<uint32_t>(DecodedHeightInPixels));
+	const int CreatedTextureIdentifier = createTextureFromRgbaPixels(DecodedRgbaPixels, static_cast<uint32_t>(DecodedWidthInPixels), static_cast<uint32_t>(DecodedHeightInPixels), Options);
 	stbi_image_free(DecodedRgbaPixels);
 	return CreatedTextureIdentifier;
 }
@@ -2510,18 +2630,19 @@ uint32_t Vulkanised::VulkanRenderer::getDefaultWhiteTextureIdentifier()
 	if (!m_DefaultWhiteTextureIdentifier.has_value())
 	{
 		constexpr std::array<unsigned char, 4> c_SingleWhitePixel{ 255, 255, 255, 255 };
-		m_DefaultWhiteTextureIdentifier = static_cast<uint32_t>(createTextureViewAndDescriptorForImage(createTextureImageFromRgbaPixels(c_SingleWhitePixel.data(), 1, 1)));
+		m_DefaultWhiteTextureIdentifier = static_cast<uint32_t>(createTextureFromRgbaPixels(c_SingleWhitePixel.data(), 1, 1));
 	}
 	return m_DefaultWhiteTextureIdentifier.value();
 }
 
-int Vulkanised::VulkanRenderer::createTextureViewAndDescriptorForImage(int TextureImageIndex)
+int Vulkanised::VulkanRenderer::createTextureViewAndDescriptorForImage(int TextureImageIndex, const Rendering::TextureOptions& Options)
 {
 	// The image already has its view (the allocator made it): create the texture descriptor, and return location of set with texture
-	return createTextureDescriptor(m_TextureImages[TextureImageIndex].m_ImageView);
+	const VkSampler ChosenSampler = Options.m_Filtering == Rendering::TextureFiltering::Pixelated ? m_PixelatedTextureSampler : m_SmoothTextureSampler;
+	return createTextureDescriptor(m_TextureImages[TextureImageIndex].m_ImageView, ChosenSampler);
 }
 
-int Vulkanised::VulkanRenderer::createTextureDescriptor(VkImageView textureImage)
+int Vulkanised::VulkanRenderer::createTextureDescriptor(VkImageView textureImage, VkSampler TextureSampler)
 {
 	VkDescriptorSet descriptorSet;
 
@@ -2548,7 +2669,7 @@ int Vulkanised::VulkanRenderer::createTextureDescriptor(VkImageView textureImage
 	VkDescriptorImageInfo imageInfo = {};
 	imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;	// Image layout when in use
 	imageInfo.imageView = textureImage;									// Image to bind to set
-	imageInfo.sampler = m_TextureSampler;									// Sampler to use for set
+	imageInfo.sampler = TextureSampler;									// Sampler to use for set
 
 	// Descriptor Write Info
 	VkWriteDescriptorSet descriptorWrite = {};
