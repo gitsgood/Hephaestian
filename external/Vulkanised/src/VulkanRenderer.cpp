@@ -193,6 +193,9 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	// We pass the sorted list directly to recordCommands now
 	vkResetCommandBuffer(m_CommandBuffers[imageIndex], 0);
 	// Note: You must modify recordCommands signature to accept the sortedInstances. Let's inline the recording here for clarity or pass it.
+	// A screenshot was asked for: this frame also copies its finished image into a CPU-readable buffer
+	prepareScreenshotBufferIfRequested();
+
 	// Assuming recordCommands is modified to take the list:
 	recordCommands(imageIndex, sortedInstances);
 
@@ -211,6 +214,12 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	if (vkQueueSubmit(m_GraphicsQueue, 1, &submitInfo, m_DrawFences[m_CurrentFrame]) != VK_SUCCESS)
 		throw std::runtime_error("failed to submit command buffer to queue");
 
+	if (m_ShouldCaptureScreenshotThisFrame)
+	{
+		vkQueueWaitIdle(m_GraphicsQueue);	// Only on screenshot frames: the copy has to be finished before reading it
+		writeCapturedScreenshotToFile();
+	}
+
 	VkPresentInfoKHR presentInfo{};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	presentInfo.waitSemaphoreCount = 1;
@@ -223,6 +232,136 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	if (presentResult == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapchain(); return; }
 
 	m_CurrentFrame = (m_CurrentFrame + 1) % Utilities::Vulkan::c_MaxFrameDraws;
+}
+
+void Vulkanised::VulkanRenderer::requestScreenshot(const std::filesystem::path& OutputBitmapFilePath)
+{
+	m_PendingScreenshotFilePath = OutputBitmapFilePath;
+}
+
+void Vulkanised::VulkanRenderer::prepareScreenshotBufferIfRequested()
+{
+	m_ShouldCaptureScreenshotThisFrame = false;
+	if (!m_PendingScreenshotFilePath.has_value())
+	{
+		return;
+	}
+
+	const bool CanCopyFromSwapchain = m_SwapchainImageFormat == VK_FORMAT_B8G8R8A8_UNORM || m_SwapchainImageFormat == VK_FORMAT_B8G8R8A8_SRGB
+		|| m_SwapchainImageFormat == VK_FORMAT_R8G8B8A8_UNORM || m_SwapchainImageFormat == VK_FORMAT_R8G8B8A8_SRGB;
+	if (!CanCopyFromSwapchain)
+	{
+		LOGW("Screenshots only support 8-bit RGBA/BGRA swapchains (this one is VkFormat {}).", static_cast<int>(m_SwapchainImageFormat));
+		m_PendingScreenshotFilePath.reset();
+		return;
+	}
+
+	const VkDeviceSize ScreenshotSizeInBytes = static_cast<VkDeviceSize>(m_SwapchainExtent.width) * m_SwapchainExtent.height * 4;
+	Utilities::Vulkan::createBuffer(m_MainDevice.physicalDevice, m_MainDevice.logicalDevice, ScreenshotSizeInBytes,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		&m_ScreenshotBuffer, &m_ScreenshotBufferMemory);
+	m_ShouldCaptureScreenshotThisFrame = true;
+}
+
+void Vulkanised::VulkanRenderer::recordScreenshotCopy(VkCommandBuffer CommandBuffer, VkImage SwapchainImage)
+{
+	// The render pass left the image ready to present: make it a copy source, copy, then hand it back for presenting
+	VkImageMemoryBarrier ImageBarrier{};
+	ImageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	ImageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	ImageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	ImageBarrier.image = SwapchainImage;
+	ImageBarrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+	ImageBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	ImageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	ImageBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	ImageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	vkCmdPipelineBarrier(CommandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &ImageBarrier);
+
+	VkBufferImageCopy CopyRegion{};
+	CopyRegion.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+	CopyRegion.imageExtent = { m_SwapchainExtent.width, m_SwapchainExtent.height, 1 };
+	vkCmdCopyImageToBuffer(CommandBuffer, SwapchainImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_ScreenshotBuffer, 1, &CopyRegion);
+
+	ImageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	ImageBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	ImageBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	ImageBarrier.dstAccessMask = 0;
+	vkCmdPipelineBarrier(CommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &ImageBarrier);
+}
+
+void Vulkanised::VulkanRenderer::writeCapturedScreenshotToFile()
+{
+	const std::filesystem::path OutputFilePath = m_PendingScreenshotFilePath.value_or("screenshot.bmp");
+	const uint32_t ScreenshotWidthInPixels = m_SwapchainExtent.width;
+	const uint32_t ScreenshotHeightInPixels = m_SwapchainExtent.height;
+	constexpr uint32_t c_BytesPerPixel{ 4 };
+	const uint32_t PixelDataSizeInBytes = ScreenshotWidthInPixels * ScreenshotHeightInPixels * c_BytesPerPixel;
+
+	void* MappedPixels = nullptr;
+	vkMapMemory(m_MainDevice.logicalDevice, m_ScreenshotBufferMemory, 0, PixelDataSizeInBytes, 0, &MappedPixels);
+
+	// Written as a 32-bit, top-down .bmp: the simplest image format there is, no library needed
+	std::error_code DirectoryCreationError;
+	std::filesystem::create_directories(OutputFilePath.parent_path(), DirectoryCreationError);
+	std::ofstream BitmapFile(OutputFilePath, std::ios::binary);
+	if (BitmapFile)
+	{
+		// BMP stores every number little-endian: lowest byte first
+		auto writeLittleEndianNumber = [&BitmapFile](uint32_t NumberToWrite, int ByteCountToWrite)
+		{
+			for (int CurrentByteIndex{ 0 }; CurrentByteIndex < ByteCountToWrite; ++CurrentByteIndex)
+			{
+				BitmapFile.put(static_cast<char>((NumberToWrite >> (8 * CurrentByteIndex)) & 0xFF));
+			}
+		};
+
+		constexpr uint32_t c_FileHeaderSizeInBytes{ 14 };
+		constexpr uint32_t c_InfoHeaderSizeInBytes{ 40 };				// BITMAPINFOHEADER
+		constexpr uint32_t c_PixelDataOffsetInBytes{ c_FileHeaderSizeInBytes + c_InfoHeaderSizeInBytes };
+		constexpr uint32_t c_PixelsPerMetreAt72DotsPerInch{ 2835 };
+
+		// File header
+		BitmapFile.put('B'); BitmapFile.put('M');
+		writeLittleEndianNumber(c_PixelDataOffsetInBytes + PixelDataSizeInBytes, 4);	// Whole file size
+		writeLittleEndianNumber(0, 4);												// Reserved
+		writeLittleEndianNumber(c_PixelDataOffsetInBytes, 4);						// Where the pixels start
+		// Info header
+		writeLittleEndianNumber(c_InfoHeaderSizeInBytes, 4);
+		writeLittleEndianNumber(ScreenshotWidthInPixels, 4);
+		writeLittleEndianNumber(static_cast<uint32_t>(-static_cast<int32_t>(ScreenshotHeightInPixels)), 4);	// Negative height = rows stored top-down, like the swapchain
+		writeLittleEndianNumber(1, 2);												// Colour planes (always 1)
+		writeLittleEndianNumber(c_BytesPerPixel * 8, 2);								// Bits per pixel
+		writeLittleEndianNumber(0, 4);												// No compression
+		writeLittleEndianNumber(PixelDataSizeInBytes, 4);
+		writeLittleEndianNumber(c_PixelsPerMetreAt72DotsPerInch, 4);					// Horizontal resolution
+		writeLittleEndianNumber(c_PixelsPerMetreAt72DotsPerInch, 4);					// Vertical resolution
+		writeLittleEndianNumber(0, 4);												// Palette colours (none)
+		writeLittleEndianNumber(0, 4);												// Important colours (all)
+
+		// BMP wants each pixel as Blue, Green, Red, Alpha: RGBA swapchains get their red and blue swapped
+		std::vector<unsigned char> PixelBytes(static_cast<const unsigned char*>(MappedPixels), static_cast<const unsigned char*>(MappedPixels) + PixelDataSizeInBytes);
+		const bool IsSwapchainRedFirst = m_SwapchainImageFormat == VK_FORMAT_R8G8B8A8_UNORM || m_SwapchainImageFormat == VK_FORMAT_R8G8B8A8_SRGB;
+		for (std::size_t CurrentPixelFirstByteIndex{ 0 }; CurrentPixelFirstByteIndex < PixelBytes.size(); CurrentPixelFirstByteIndex += c_BytesPerPixel)
+		{
+			if (IsSwapchainRedFirst) { std::swap(PixelBytes[CurrentPixelFirstByteIndex], PixelBytes[CurrentPixelFirstByteIndex + 2]); }
+			PixelBytes[CurrentPixelFirstByteIndex + 3] = 255;	// Opaque, whatever the swapchain's alpha ended up as
+		}
+		BitmapFile.write(reinterpret_cast<const char*>(PixelBytes.data()), static_cast<std::streamsize>(PixelBytes.size()));
+		LOG("Screenshot saved to {}", OutputFilePath.string());
+	}
+	else
+	{
+		LOGE("Couldn't write screenshot {}", OutputFilePath.string());
+	}
+
+	vkUnmapMemory(m_MainDevice.logicalDevice, m_ScreenshotBufferMemory);
+	vkDestroyBuffer(m_MainDevice.logicalDevice, m_ScreenshotBuffer, nullptr);
+	vkFreeMemory(m_MainDevice.logicalDevice, m_ScreenshotBufferMemory, nullptr);
+	m_ScreenshotBuffer = VK_NULL_HANDLE;
+	m_ScreenshotBufferMemory = VK_NULL_HANDLE;
+	m_ShouldCaptureScreenshotThisFrame = false;
+	m_PendingScreenshotFilePath.reset();
 }
 
 void Vulkanised::VulkanRenderer::initialiseImGui(GLFWwindow* WindowToReceiveImGuiInput)
@@ -865,6 +1004,10 @@ void Vulkanised::VulkanRenderer::createSwapchain()
 	swapchainCreateInfo.minImageCount = imageCount;												// Minimum images in the swapchain
 	swapchainCreateInfo.imageArrayLayers = 1;													// Number of layers for each image in chain
 	swapchainCreateInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;						// What attachement images will be used as
+	if (swapchainDetails.surfaceCapabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+	{
+		swapchainCreateInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;	// So a finished frame can be copied out (requestScreenshot)
+	}
 	swapchainCreateInfo.preTransform = swapchainDetails.surfaceCapabilities.currentTransform;	// Transform to perform on swapchain images
 	swapchainCreateInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;						// How to handle blending images with external graphics (e.g. other windows)
 	swapchainCreateInfo.clipped = VK_TRUE;														// Whether to clip parts of image not in view (e.g. behind another window, off screen, etc.)
@@ -1935,6 +2078,11 @@ void Vulkanised::VulkanRenderer::recordCommands(uint32_t currentImage, const std
 	}
 
 	vkCmdEndRenderPass(m_CommandBuffers[currentImage]);
+
+	if (m_ShouldCaptureScreenshotThisFrame)
+	{
+		recordScreenshotCopy(m_CommandBuffers[currentImage], m_SwapchainImages[currentImage].image);
+	}
 	if (vkEndCommandBuffer(m_CommandBuffers[currentImage]) != VK_SUCCESS)
 	{
 		LOGNTHROW("failed to stop recording a command buffer");

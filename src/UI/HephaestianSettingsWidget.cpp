@@ -1,5 +1,8 @@
 #include "Hephaestian/UI/HephaestianSettingsWidget.h"
 
+#include <array>
+#include <functional>
+
 #include <imgui.h>
 
 namespace Hephaestian::UI
@@ -23,14 +26,33 @@ void HephaestianSettingsWidget::drawSettingsWindow()
 			m_SettingsManager.modifySettings([ShowInfiniteGrid](HephaestianSettings& Settings) { Settings.m_ShowInfiniteGrid = ShowInfiniteGrid; });
 		}
 
-		// - Background colour: dragging changes it every frame, so apply live but hold off on writing the file
+		// Dragging a colour or a position changes it every frame: apply live, but hold off on writing the file until released
+		auto applyContinuousEdit = [this](const std::function<void(HephaestianSettings&)>& EditToApply)
+		{
+			m_SettingsManager.setAutomaticallySaveRuntimeChanges(false);
+			m_SettingsManager.modifySettings(EditToApply);
+			m_SettingsManager.setAutomaticallySaveRuntimeChanges(true);
+			m_HasUnsavedContinuousEdit = true;
+		};
+
+		// - Background colour
 		std::array<float, 3> BackgroundClearColour = CurrentSettings.m_BackgroundClearColour;
 		if (ImGui::ColorEdit3("Background colour", BackgroundClearColour.data()))
 		{
-			m_SettingsManager.setAutomaticallySaveRuntimeChanges(false);
-			m_SettingsManager.modifySettings([&BackgroundClearColour](HephaestianSettings& Settings) { Settings.m_BackgroundClearColour = BackgroundClearColour; });
-			m_SettingsManager.setAutomaticallySaveRuntimeChanges(true);
-			m_HasUnsavedContinuousEdit = true;
+			applyContinuousEdit([&BackgroundClearColour](HephaestianSettings& Settings) { Settings.m_BackgroundClearColour = BackgroundClearColour; });
+		}
+
+		// - Light: world position (drag a number, or double-click it to type one) and colour
+		ImGui::SeparatorText("Light");
+		std::array<float, 3> LightWorldPosition = CurrentSettings.m_LightWorldPosition;
+		if (ImGui::DragFloat3("Light position", LightWorldPosition.data(), 1.0f, -5000.0f, 5000.0f, "%.1f"))
+		{
+			applyContinuousEdit([&LightWorldPosition](HephaestianSettings& Settings) { Settings.m_LightWorldPosition = LightWorldPosition; });
+		}
+		std::array<float, 3> LightColour = CurrentSettings.m_LightColour;
+		if (ImGui::ColorEdit3("Light colour", LightColour.data()))
+		{
+			applyContinuousEdit([&LightColour](HephaestianSettings& Settings) { Settings.m_LightColour = LightColour; });
 		}
 	}
 	ImGui::End();

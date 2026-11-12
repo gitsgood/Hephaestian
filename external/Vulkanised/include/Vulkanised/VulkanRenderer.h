@@ -9,6 +9,7 @@
 #include <set>
 #include <algorithm>
 #include <optional>
+#include <filesystem>
 
 #include <stb_image.h>
 #define GLFW_INCLUDE_VULKAN
@@ -51,6 +52,14 @@ public:
 	void setCameraViewAndLens(const glm::mat4& CameraViewMatrix, const glm::vec3& CameraWorldPosition, float VerticalFieldOfViewInRadians, float NearClippingPlaneDistance, float FarClippingPlaneDistance) noexcept;
 	[[nodiscard]] float getSwapchainAspectRatio() const noexcept;
 
+	// - Screenshots: the next submitted frame is also saved as a 32-bit .bmp (folders are created as needed)
+	void requestScreenshot(const std::filesystem::path& OutputBitmapFilePath);
+	[[nodiscard]] bool isScreenshotPending() const noexcept { return m_PendingScreenshotFilePath.has_value(); }
+
+	// - Lighting (one point light; place it far away to make it behave like the sun)
+	void setLightPosition(const glm::vec3& NewLightWorldPosition) noexcept { m_UboViewProjection.lightPos = glm::vec4(NewLightWorldPosition, 1.0f); }
+	void setLightColour(const glm::vec3& NewLightColour) noexcept { m_UboViewProjection.lightColor = glm::vec4(NewLightColour, 1.0f); }
+
 	// - Background
 	void setClearColour(const glm::vec3& NewClearColour) noexcept { m_ClearColour = NewClearColour; }
 	[[nodiscard]] const glm::vec3& getClearColour() const noexcept { return m_ClearColour; }
@@ -89,6 +98,15 @@ private:
 	void updateProjectionMatrixFromCameraLens() noexcept;
 
 	glm::vec3 m_ClearColour{ 0.6f, 0.65f, 0.4f };
+
+	// Screenshots
+	std::optional<std::filesystem::path> m_PendingScreenshotFilePath;
+	bool m_ShouldCaptureScreenshotThisFrame{ false };
+	VkBuffer m_ScreenshotBuffer{ VK_NULL_HANDLE };
+	VkDeviceMemory m_ScreenshotBufferMemory{ VK_NULL_HANDLE };
+	void prepareScreenshotBufferIfRequested();
+	void recordScreenshotCopy(VkCommandBuffer CommandBuffer, VkImage SwapchainImage);
+	void writeCapturedScreenshotToFile();
 
 	// Dear ImGui
 	bool m_IsImGuiInitialised{ false };

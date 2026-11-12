@@ -8,6 +8,12 @@
 #include "Hephaestian/Settings/HephaestianSettingsManager.h"
 #include "Hephaestian/UI/HephaestianSettingsWidget.h"
 
+#include <chrono>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <string_view>
+
 #include <imgui.h>
 
 // Little trick I stole from Rust. Ideally this should be immutable and thread-safe, but at least it is supposed to be somehow thread-safe now. This might come in handy down the line.
@@ -66,9 +72,21 @@ static void initWindow(std::string_view wName = "Test Window", const int width =
 //	return RandomTransform;
 //}
 
-auto main() -> int
+auto main(int ArgumentCount, char** Arguments) -> int
 {
 	using namespace Hephaestian;
+
+	// "--screenshot-and-exit <seconds> <file.bmp>": render for that long, save one frame, quit (automated checks)
+	std::optional<float> ScreenshotAndExitAfterSeconds;
+	std::filesystem::path ScreenshotAndExitFilePath;
+	for (int CurrentArgumentIndex{ 1 }; CurrentArgumentIndex < ArgumentCount; ++CurrentArgumentIndex)
+	{
+		if (std::string_view(Arguments[CurrentArgumentIndex]) == "--screenshot-and-exit" && CurrentArgumentIndex + 2 < ArgumentCount)
+		{
+			ScreenshotAndExitAfterSeconds = std::stof(Arguments[CurrentArgumentIndex + 1]);
+			ScreenshotAndExitFilePath = Arguments[CurrentArgumentIndex + 2];
+		}
+	}
 
 	LOGH("Bruh");
 
@@ -91,6 +109,8 @@ auto main() -> int
 			// Also runs once right now, applying the loaded values
 			renderer.setInfiniteGridVisible(NewSettings.m_ShowInfiniteGrid);
 			renderer.setClearColour({ NewSettings.m_BackgroundClearColour[0], NewSettings.m_BackgroundClearColour[1], NewSettings.m_BackgroundClearColour[2] });
+			renderer.setLightPosition({ NewSettings.m_LightWorldPosition[0], NewSettings.m_LightWorldPosition[1], NewSettings.m_LightWorldPosition[2] });
+			renderer.setLightColour({ NewSettings.m_LightColour[0], NewSettings.m_LightColour[1], NewSettings.m_LightColour[2] });
 
 			if (NewSettings.m_ShowInfiniteGrid != PreviousSettings.m_ShowInfiniteGrid)
 			{
@@ -206,7 +226,7 @@ auto main() -> int
 
 	GameScene.setActiveCameraEntity(PlayerCameraEntity);
 
-	LOG("Controls: left click to capture the mouse, Escape to release it, WASD/QE to move, Shift to sprint. Settings are in the ImGui window.");// , C to switch camera.");
+	LOG("Controls: left click to capture the mouse, Escape to release it, WASD/QE to move, Shift to sprint, F12 for a screenshot. Settings are in the ImGui window.");// , C to switch camera.");
 
 	float LastFrameTimeInSeconds = static_cast<float>(glfwGetTime());
 
@@ -235,6 +255,23 @@ auto main() -> int
 		if (Input.wasKeyPressedThisFrame(GLFW_KEY_ESCAPE))
 		{
 			Input.setMouseCursorCaptured(false);
+		}
+		if (Input.wasKeyPressedThisFrame(GLFW_KEY_F12))
+		{
+			const auto ScreenshotTimestampInSeconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+			renderer.requestScreenshot(Vulkanised::Utilities::File::getExecutableDirectory() / "Screenshots" / ("Hephaestian_" + std::to_string(ScreenshotTimestampInSeconds) + ".bmp"));
+		}
+		if (ScreenshotAndExitAfterSeconds.has_value() && CurrentFrameTimeInSeconds >= ScreenshotAndExitAfterSeconds.value())
+		{
+			if (!renderer.isScreenshotPending() && !ScreenshotAndExitFilePath.empty())
+			{
+				renderer.requestScreenshot(ScreenshotAndExitFilePath);	// Saved by this frame's SubmitFrame
+				ScreenshotAndExitFilePath.clear();
+			}
+			else if (!renderer.isScreenshotPending())
+			{
+				glfwSetWindowShouldClose(window.load().get(), GLFW_TRUE);	// The screenshot frame has been submitted: done
+			}
 		}
 		// While looking around, the (hidden, locked) cursor must not hover or click ImGui windows behind our back
 		if (Input.isMouseCursorCaptured())
