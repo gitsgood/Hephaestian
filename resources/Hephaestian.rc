@@ -1,0 +1,4 @@
+// Windows resources, compiled into Hephaestian.exe.
+// The first icon is what Explorer, shortcuts and the pinned taskbar button show for the exe.
+// It's named GLFW_ICON because GLFW looks for exactly that name and gives it to every window it creates.
+GLFW_ICON ICON "Hephaestian.ico"

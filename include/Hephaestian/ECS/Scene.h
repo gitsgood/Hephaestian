@@ -1,7 +1,10 @@
 #ifndef HEPHAESTIAN_SCENE_H
 #define HEPHAESTIAN_SCENE_H
 
+#include <array>
 #include <cstdint>
+#include <filesystem>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -9,10 +12,22 @@
 
 #include <Vulkanised/VulkanRenderer.h>
 
+#include "Hephaestian/ECS/SceneFile.h"
 #include "Hephaestian/Input/InputManager.h"
 
 namespace Hephaestian
 {
+
+namespace Assets { class AssetLibrary; }
+struct HephaestianSettings;
+
+// What a scene can override in HephaestianSettings while it's loaded. Unset = the engine setting applies.
+struct SceneEnvironmentOverrides
+{
+	std::optional<std::array<float, 3>> m_ClearColour;
+	std::optional<std::array<float, 3>> m_LightWorldPosition;
+	std::optional<std::array<float, 3>> m_LightColour;
+};
 
 /*
 * Owns the EnTT registry and runs the systems in the right order. Anything not covered by the helpers here can be done
@@ -44,6 +59,25 @@ public:
 	bool setActiveCameraEntity(entt::entity NewActiveCameraEntity);
 	[[nodiscard]] entt::entity getActiveCameraEntity() const noexcept { return m_ActiveCameraEntity; }
 
+	// - Scene files (assets/Scenes/*.json, layout in SceneFile.h)
+	// Replaces everything in the scene with the file's contents. Problems (missing assets, unknown parents...) are logged
+	// and skipped; only a file that can't be read or parsed at all returns false, and then the current scene is left alone.
+	bool loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets::AssetLibrary& AssetLibraryToLoadFrom);
+	// Writes the scene as it is now (entities, components, asset table, environment overrides) in the same layout
+	bool saveToJsonFile(const std::filesystem::path& SceneFilePath) const;
+	// "Save scene": writes over the file the scene was loaded from. Debug builds ALSO write the repository's copy
+	// (<repo>/assets/...), which is the one the build deploys, so the change survives the next build.
+	bool saveOverLoadedSceneFile() const;
+	[[nodiscard]] const std::filesystem::path& getLoadedSceneFilePath() const noexcept { return m_LoadedSceneFilePath; }
+
+	// Destroys every entity and forgets the loaded file, asset table and environment overrides
+	void clear();
+
+	// - Environment: what the scene overrides, and applying "scene override, else engine setting" to the renderer
+	[[nodiscard]] SceneEnvironmentOverrides& getEnvironmentOverrides() noexcept { return m_EnvironmentOverrides; }
+	[[nodiscard]] const SceneEnvironmentOverrides& getEnvironmentOverrides() const noexcept { return m_EnvironmentOverrides; }
+	void applyEnvironmentToRenderer(Vulkanised::VulkanRenderer& Renderer, const HephaestianSettings& EngineSettings) const;
+
 	// - Per frame
 	void updateSimulation(const InputManager& Input, float DeltaTimeInSeconds);
 	void renderToRenderer(Vulkanised::VulkanRenderer& Renderer);
@@ -61,6 +95,11 @@ private:
 
 	// Reused every frame to avoid re-allocating the render packet
 	std::vector<Vulkanised::RenderInstance> m_RenderInstancesForCurrentFrame;
+
+	// From the loaded scene file, kept so it can be written back out
+	std::filesystem::path m_LoadedSceneFilePath;
+	SceneFile::SceneFileAssetTable m_SceneAssetTable;
+	SceneEnvironmentOverrides m_EnvironmentOverrides;
 };
 
 }

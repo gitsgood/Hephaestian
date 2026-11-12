@@ -1,0 +1,49 @@
+{
+   "assets": {
+      "models": {},
+      "textures": {
+         "Giraffe": "Textures/giraffe.jpg",
+         "HephaestosLogo": "resources/Hephaestos.png",
+         "Panda": "Textures/panda.jpg"
+      }
+   },
+   "clearColour": [0.08, 0.09, 0.12],
+   "lightPosition": [6, 10, 8],
+   "lightColour": [1, 0.95, 0.85],
+   "entities": [
+      {
+         "id": "Player",
+         "position": [0, 2, 6],
+         "rotationInDegrees": [-12, 0, 0],
+         "freeFlyController": { "movementSpeed": 4 }
+      },
+      {
+         "id": "PlayerCamera",
+         "parent": "Player",
+         "camera": {}
+      },
+      {
+         "id": "Floor",
+         "primitive": "quad",
+         "texture": "Panda",
+         "scale": [8, 1, 8]
+      },
+      {
+         "id": "LogoCube",
+         "name": "Spinning logo cube",
+         "primitive": "cube",
+         "texture": "HephaestosLogo",
+         "position": [0, 1.2, 0],
+         "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+      },
+      {
+         "id": "Moon",
+         "parent": "LogoCube",
+         "primitive": "sphere",
+         "texture": "Giraffe",
+         "position": [1.5, 0, 0],
+         "scale": [0.5, 0.5, 0.5]
+      }
+   ],
+   "activeCamera": "PlayerCamera"
+}

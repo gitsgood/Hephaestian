@@ -2,6 +2,7 @@
 #define HEPHAESTIAN_COMPONENTS_H
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include <entt/entt.hpp>
@@ -61,6 +62,17 @@ struct ModelRendererComponent
 {
 	std::uint32_t m_ModelIdentifier{ 0 };
 	bool m_IsVisible{ true };
+	std::optional<std::uint32_t> m_TextureOverrideIdentifier;	// When set, every piece of the model uses this texture instead of its own
+};
+
+// What a scene file said about this entity, so the scene can be written back out the same way ("Save scene").
+// Entities made in code don't need it: they get an id generated from their name when saved.
+struct SceneSerializationComponent
+{
+	std::string m_SceneIdentifier;		// The entity's unique "id" in the scene file (parents and the active camera refer to it)
+	std::string m_ModelAssetName;		// Name in the scene's asset table, or empty
+	std::string m_PrimitiveShapeName;	// "quad", "cube", "sphere", or empty
+	std::string m_TextureAssetName;		// Texture override's name in the asset table, or empty
 };
 
 // Turns the entity into something that can be looked through. The entity's world transform IS the eye.

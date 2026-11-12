@@ -4,6 +4,7 @@
 #include <array>
 #include <filesystem>
 #include <optional>
+#include <string>
 
 #include "glaze/glaze.hpp"
 
@@ -20,6 +21,9 @@ struct HephaestianSettings
 	// The scene's one point light. The further away it is, the more it behaves like the sun (parallel light over the whole scene).
 	std::array<float, 3> m_LightWorldPosition{ 20.0f, 40.0f, 15.0f };
 	std::array<float, 3> m_LightColour{ 1.0f, 1.0f, 1.0f };			// RGB, 0 to 1
+
+	// The scene opened at startup, relative to the runtime assets folder ("--scene <path>" on the command line wins)
+	std::string m_StartupSceneRelativePath{ "Scenes/Main.scene.json" };
 
 	// Lets the settings manager tell whether anything actually changed (compares every member, so new ones are covered automatically)
 	[[nodiscard]] bool operator==(const HephaestianSettings&) const = default;
@@ -50,7 +54,8 @@ struct glz::meta<Hephaestian::HephaestianSettings>
 		"showInfiniteGrid", &T::m_ShowInfiniteGrid,
 		"backgroundClearColour", &T::m_BackgroundClearColour,
 		"lightPosition", &T::m_LightWorldPosition,
-		"lightColour", &T::m_LightColour
+		"lightColour", &T::m_LightColour,
+		"startupScene", &T::m_StartupSceneRelativePath
 	);
 };
 

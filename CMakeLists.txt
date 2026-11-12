@@ -34,6 +34,8 @@ set(SOURCES
     include/Hephaestian/Input/InputManager.h                    src/Input/InputManager.cpp
     include/Hephaestian/ECS/Components.h
     include/Hephaestian/ECS/Scene.h                             src/ECS/Scene.cpp
+    include/Hephaestian/ECS/SceneFile.h                         src/ECS/SceneSerialization.cpp
+    include/Hephaestian/Assets/AssetLibrary.h                   src/Assets/AssetLibrary.cpp
     include/Hephaestian/ECS/Systems/TransformHierarchySystem.h  src/ECS/Systems/TransformHierarchySystem.cpp
     include/Hephaestian/ECS/Systems/MovementSystems.h           src/ECS/Systems/MovementSystems.cpp
     include/Hephaestian/ECS/Systems/CameraSystem.h              src/ECS/Systems/CameraSystem.cpp
@@ -47,13 +49,20 @@ set(SOURCES
 # Define your executable using the SOURCES variable
 add_executable(${PROJECT_NAME} ${SOURCES})
 
+# Windows: the exe's own icon (Explorer, shortcuts, taskbar), also picked up by GLFW for the window.
+# Regenerate resources/Hephaestian.ico if resources/Hephaestos.png changes.
+if (WIN32)
+    target_sources(${PROJECT_NAME} PRIVATE resources/Hephaestian.rc)
+endif()
+
 # RUNTIME ASSETS (the workaround is dead, long live the workaround)
 # Everything the game needs at runtime is copied to "<exe folder>/assets", and only when something actually changed.
-# Shaders always come along. Add more folders to ASSET_DIRECTORIES as the game gets its own assets (e.g. assets/Models).
+# Shaders always come along, and so does every folder inside our own assets/ (no need to list them one by one).
 vulkanised_deploy_runtime_assets(${PROJECT_NAME}
     ASSET_ROOT_DIRECTORIES
-        "${CMAKE_CURRENT_SOURCE_DIR}/assets"                # Every folder/file inside -> assets/<same name> (Models, Engine, ...)
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets"                # Every folder/file inside -> assets/<same name> (Models, Scenes, ...)
     ASSET_DIRECTORIES
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources"             # -> assets/resources (the engine icon: Linux window icon, usable as a texture too)
         "${VULKANISED_SOURCE_DIRECTORY}/Textures"           # -> assets/Textures (Vulkanised's test textures, outside our assets folder)
     FILES_NEXT_TO_EXECUTABLE
         "${CMAKE_CURRENT_SOURCE_DIR}/VulkanisedLoggerSettings.json"
@@ -66,6 +75,10 @@ target_precompile_headers(${PROJECT_NAME} PRIVATE src/pch.h)
 
 # Tell CMake to actually bother including the headers in my own project (HAS to be after "add_executable")
 target_include_directories(${PROJECT_NAME} PRIVATE include)
+
+# Debug builds only: where the repository's assets folder is, so "Save scene" can also update the copy the build deploys
+# (otherwise the next build would mirror the old version back next to the exe). Release builds never know the repo path.
+target_compile_definitions(${PROJECT_NAME} PRIVATE "$<$<CONFIG:Debug>:HEPHAESTIAN_SOURCE_ASSETS_DIRECTORY=\"${CMAKE_CURRENT_SOURCE_DIR}/assets\">")
 
 # More is more.
 set_target_properties(${PROJECT_NAME} PROPERTIES

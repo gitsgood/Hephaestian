@@ -1,0 +1,25 @@
+{
+   "assets": {
+      "models": {
+         "QuarryScan": "Models/laz_mesh.obj"
+      },
+      "textures": {}
+   },
+   "entities": [
+      {
+         "id": "Player",
+         "position": [0, 1.7, 3],
+         "freeFlyController": { "movementSpeed": 3, "sprintMultiplier": 3, "mouseSensitivity": 0.0025 }
+      },
+      {
+         "id": "PlayerCamera",
+         "parent": "Player",
+         "camera": { "verticalFieldOfViewInDegrees": 60, "nearClippingPlane": 0.1, "farClippingPlane": 1000 }
+      },
+      {
+         "id": "QuarryScan",
+         "model": "QuarryScan"
+      }
+   ],
+   "activeCamera": "PlayerCamera"
+}

@@ -25,7 +25,7 @@ void buildRenderInstancesFromModelRenderers(const entt::registry& Registry, cons
 		{
 			RenderInstancesToFill.push_back({
 				CurrentSubmesh.m_MeshIdentifier,
-				CurrentSubmesh.m_TextureIdentifier,
+				ModelRenderer.m_TextureOverrideIdentifier.value_or(CurrentSubmesh.m_TextureIdentifier),	// A texture override replaces every piece's own texture
 				WorldTransform.m_WorldTransformMatrix * CurrentSubmesh.m_LocalTransformRelativeToModelRoot
 			});
 		}
