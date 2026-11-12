@@ -234,6 +234,45 @@ namespace Vulkanised::Utilities::Vulkan
         endAndSubmitCommandBuffer(logicalDevice, commandPool, queue, commandBuffer);
     }
 
+
+    // Everything one image layout transition (synchronization2) needs to know
+    struct ImageLayoutTransition
+    {
+        VkImage m_Image{ VK_NULL_HANDLE };
+        VkImageAspectFlags m_AspectMask{ VK_IMAGE_ASPECT_COLOR_BIT };
+        VkImageLayout m_OldLayout{ VK_IMAGE_LAYOUT_UNDEFINED };    // UNDEFINED = don't care about what's in it now (its contents may be thrown away)
+        VkImageLayout m_NewLayout{ VK_IMAGE_LAYOUT_UNDEFINED };
+        VkPipelineStageFlags2 m_StagesThatMustFinish{ VK_PIPELINE_STAGE_2_NONE };   // ...with these accesses made visible...
+        VkAccessFlags2 m_AccessesThatMustFinish{ VK_ACCESS_2_NONE };
+        VkPipelineStageFlags2 m_StagesThatMustWait{ VK_PIPELINE_STAGE_2_NONE };     // ...before these stages may do these accesses
+        VkAccessFlags2 m_AccessesThatMustWait{ VK_ACCESS_2_NONE };
+        uint32_t m_FirstMipLevel{ 0 };
+        uint32_t m_MipLevelCount{ VK_REMAINING_MIP_LEVELS };
+    };
+
+    // Records one image barrier (vkCmdPipelineBarrier2). Several in one call would be cheaper, but one is what's needed everywhere so far.
+    inline void recordImageLayoutTransition(VkCommandBuffer CommandBuffer, const ImageLayoutTransition& Transition)
+    {
+        VkImageMemoryBarrier2 ImageBarrier{};
+        ImageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        ImageBarrier.srcStageMask = Transition.m_StagesThatMustFinish;
+        ImageBarrier.srcAccessMask = Transition.m_AccessesThatMustFinish;
+        ImageBarrier.dstStageMask = Transition.m_StagesThatMustWait;
+        ImageBarrier.dstAccessMask = Transition.m_AccessesThatMustWait;
+        ImageBarrier.oldLayout = Transition.m_OldLayout;
+        ImageBarrier.newLayout = Transition.m_NewLayout;
+        ImageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        ImageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        ImageBarrier.image = Transition.m_Image;
+        ImageBarrier.subresourceRange = { Transition.m_AspectMask, Transition.m_FirstMipLevel, Transition.m_MipLevelCount, 0, VK_REMAINING_ARRAY_LAYERS };
+
+        VkDependencyInfo DependencyInfo{};
+        DependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        DependencyInfo.imageMemoryBarrierCount = 1;
+        DependencyInfo.pImageMemoryBarriers = &ImageBarrier;
+        vkCmdPipelineBarrier2(CommandBuffer, &DependencyInfo);
+    }
+
 }
 
 #endif // !VULKANUTILS_H

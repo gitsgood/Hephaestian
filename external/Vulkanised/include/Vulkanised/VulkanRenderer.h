@@ -195,7 +195,6 @@ private:
 	VkSurfaceKHR m_Surface;
 	VkSwapchainKHR m_Swapchain;
 	std::vector<Utilities::Vulkan::SwapchainImage> m_SwapchainImages;
-	std::vector<VkFramebuffer> m_SwapchainFramebuffers;
 
 	Rendering::AllocatedImage m_DepthBuffer;
 	VkFormat m_DepthBufferFormat{ VK_FORMAT_UNDEFINED };
@@ -217,7 +216,6 @@ private:
 	// - Pipeline
 	VkPipeline m_GraphicsPipeline;
 	VkPipelineLayout m_PipelineLayout;
-	VkRenderPass m_RenderPass;
 
 	// - Pools
 	VkCommandPool m_GraphicsCommandPool;	// One-off commands (uploads). Frames record from their own pools.
@@ -242,18 +240,18 @@ private:
 	void setupDebugMessenger();
 	void createSurface();
 	void createSwapchain();
-	void createRenderPass();
+	void chooseDepthBufferFormat();
+	[[nodiscard]] VkImageAspectFlags getDepthBufferAspectMask() const noexcept;
 	void createDescriptorSetLayout();
 	void createGraphicsPipeline();
 	void createDepthBufferImage();
-	void createFramebuffers();
 	void createCommandPool();
 	void createTextureSampler();
 
 	void createDescriptorPool();
 
 	// - Resizable window related
-	void cleanupSwapchain();	// Swapchain, its image views, framebuffers, depth buffer: everything sized like the window
+	void cleanupSwapchain();	// Swapchain, its image views, depth buffer: everything sized like the window
 	void recreateSwapchain();	// Waits for the GPU, then rebuilds what cleanupSwapchain destroyed (blocks while minimised)
 	// The window's framebuffer no longer matches the swapchain (resized), checked every frame without any GLFW callback
 	[[nodiscard]] bool doesSwapchainNeedRecreation() const;
