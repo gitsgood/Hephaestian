@@ -43,6 +43,8 @@ set(SOURCES
     include/Vulkanised/VulkanRenderer.h    src/VulkanRenderer.cpp
     include/Vulkanised/Rendering/GpuMemory.h  src/Rendering/GpuMemory.cpp
     include/Vulkanised/Rendering/FrameStatistics.h
+    include/Vulkanised/Rendering/FrameResources.h
+    include/Vulkanised/Rendering/ResourceUploader.h  src/Rendering/ResourceUploader.cpp
     include/Vulkanised/Vertex.h
     include/Vulkanised/Mesh.h
 )

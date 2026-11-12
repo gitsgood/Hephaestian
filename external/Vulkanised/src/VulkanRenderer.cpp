@@ -37,7 +37,8 @@ int Vulkanised::VulkanRenderer::init(GLFWwindow* newWindow)
 		createGraphicsPipeline();
 		createInfiniteGridPipeline();
 		createDepthBufferImage();
-		createCommandPool();
+		// Uploads (geometry, textures) go to the GPU in batches through here
+		m_ResourceUploader.initialise(m_MainDevice.logicalDevice, m_GraphicsQueue, static_cast<uint32_t>(getQueueFamilies(m_MainDevice.physicalDevice).graphicsFamily), m_GpuMemory);
 		createTextureSampler();
 		createUnifiedBuffers();
 		createDescriptorPool();
@@ -97,23 +98,10 @@ uint32_t Vulkanised::VulkanRenderer::loadMesh(const std::vector<Vertex>& vertice
 		return 0;
 	}
 
-	// 1. Stage Vertices
-	Rendering::AllocatedBuffer VertexStagingBuffer = m_GpuMemory.createBuffer(vertexSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, Rendering::GpuMemoryUsage::StagingUpload, "Mesh vertex staging");
-	memcpy(VertexStagingBuffer.m_MappedData, vertices.data(), static_cast<size_t>(vertexSize));
-	m_GpuMemory.flushBufferWrites(VertexStagingBuffer);
-
-	// 2. Stage Indices
-	Rendering::AllocatedBuffer IndexStagingBuffer = m_GpuMemory.createBuffer(indexSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, Rendering::GpuMemoryUsage::StagingUpload, "Mesh index staging");
-	memcpy(IndexStagingBuffer.m_MappedData, indices.data(), static_cast<size_t>(indexSize));
-	m_GpuMemory.flushBufferWrites(IndexStagingBuffer);
-
-	// 3. Copy to Unified Buffers (Using the new offsets)
-	Utilities::Vulkan::copyBuffer(m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool, VertexStagingBuffer.m_Buffer, m_GlobalVertexBuffer.m_Buffer, vertexSize, m_CurrentVertexOffset * sizeof(Vertex));
-	Utilities::Vulkan::copyBuffer(m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool, IndexStagingBuffer.m_Buffer, m_GlobalIndexBuffer.m_Buffer, indexSize, m_CurrentIndexOffset * sizeof(uint32_t));
-
-	// Cleanup staging
-	m_GpuMemory.destroyBuffer(VertexStagingBuffer);
-	m_GpuMemory.destroyBuffer(IndexStagingBuffer);
+	// 1-3. Queue the copies into the unified buffers (at the new offsets). They go to the GPU with everything else loaded
+	//      before the next frame, in one batch, without the CPU waiting for any of it.
+	m_ResourceUploader.queueBufferUpload(vertices.data(), vertexSize, m_GlobalVertexBuffer.m_Buffer, static_cast<VkDeviceSize>(m_CurrentVertexOffset) * sizeof(Vertex));
+	m_ResourceUploader.queueBufferUpload(indices.data(), indexSize, m_GlobalIndexBuffer.m_Buffer, static_cast<VkDeviceSize>(m_CurrentIndexOffset) * sizeof(uint32_t));
 
 	// 4. Save the Asset Descriptor
 	MeshAsset asset{};
@@ -179,6 +167,9 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 		LOGNTHROW("Failed to acquire a swapchain image (VkResult {})", static_cast<int>(AcquireResult));
 	}
 	vkResetFences(m_MainDevice.logicalDevice, 1, &CurrentFrame.m_InFlightFence);
+
+	// Everything loaded since the last frame goes to the GPU now, in one batch, ahead of this frame on the same queue
+	m_ResourceUploader.submitPendingUploads();
 
 	// 1. Sort the incoming ECS payload to maximize batching (Group by Mesh, then Texture)
 	std::vector<RenderInstance> sortedInstances = instances;
@@ -830,11 +821,8 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 	m_GpuMemory.destroyBuffer(m_GlobalVertexBuffer);
 	m_GpuMemory.destroyBuffer(m_GlobalIndexBuffer);
 
-	if (m_GraphicsCommandPool != VK_NULL_HANDLE)
-	{
-		vkDestroyCommandPool(m_MainDevice.logicalDevice, m_GraphicsCommandPool, nullptr);
-		m_GraphicsCommandPool = VK_NULL_HANDLE;
-	}
+	// Uploads still queued are dropped, submitted ones waited for (the device is idle already anyway)
+	m_ResourceUploader.shutdown();
 
 
 	if (m_InfiniteGridPipeline != VK_NULL_HANDLE)
@@ -911,10 +899,6 @@ void Vulkanised::VulkanRenderer::growUnifiedBuffer(Rendering::AllocatedBuffer& B
 		NewCapacityInBytes *= 2;
 	}
 
-	// The old buffer may still be in use by frames in flight, and the draw commands are re-recorded every frame,
-	// so once the GPU is idle we can swap the buffer out from under everyone without them noticing
-	vkDeviceWaitIdle(m_MainDevice.logicalDevice);
-
 	Rendering::AllocatedBuffer GrownBuffer;
 	try
 	{
@@ -927,10 +911,12 @@ void Vulkanised::VulkanRenderer::growUnifiedBuffer(Rendering::AllocatedBuffer& B
 		throw;
 	}
 
-	if (UsedBytesToKeep > 0)
-	{
-		Utilities::Vulkan::copyBuffer(m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool, BufferToGrow.m_Buffer, GrownBuffer.m_Buffer, UsedBytesToKeep, 0);
-	}
+	// The copy goes into the current upload batch, AFTER any upload into the old buffer that's still queued (it's ordered
+	// behind them), and the batch is submitted and waited on before the old buffer dies. Waiting on the batch's fence also
+	// covers every frame submitted before it (same queue), so nothing in flight still reads the old buffer either.
+	// Draw commands are re-recorded every frame, so they simply pick up the new buffer.
+	m_ResourceUploader.queueBufferToBufferCopy(BufferToGrow.m_Buffer, GrownBuffer.m_Buffer, UsedBytesToKeep);
+	m_ResourceUploader.submitPendingUploadsAndWait();
 
 	m_GpuMemory.destroyBuffer(BufferToGrow);
 	LOG("Grew the unified {} buffer from {} MB to {} MB.", BufferNameForLogging, PreviousCapacityInBytes / (1024 * 1024), NewCapacityInBytes / (1024 * 1024));
@@ -1619,23 +1605,6 @@ void Vulkanised::VulkanRenderer::createDepthBufferImage()
 	DepthImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 	DepthImageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	m_DepthBuffer = m_GpuMemory.createImage(DepthImageCreateInfo, VK_IMAGE_ASPECT_DEPTH_BIT, "Depth buffer");
-}
-
-void Vulkanised::VulkanRenderer::createCommandPool()
-{
-	// Get indices of queue families from device
-	Utilities::Vulkan::QueueFamilyIndices queueFamilyIndices = getQueueFamilies(m_MainDevice.physicalDevice);
-
-	VkCommandPoolCreateInfo poolCreateInfo{};
-	poolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-	poolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-	poolCreateInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily;	// Queue family type that buffers from this command pool will use
-
-	// Create a graphics queue family command pool
-	if (vkCreateCommandPool(m_MainDevice.logicalDevice, &poolCreateInfo, nullptr, &m_GraphicsCommandPool) != VK_SUCCESS)
-	{
-		LOGNTHROW("failed to create command pool");
-	}
 }
 
 void Vulkanised::VulkanRenderer::createTextureSampler()
@@ -2468,12 +2437,6 @@ int Vulkanised::VulkanRenderer::createTextureImageFromRgbaPixels(const unsigned 
 	const uint32_t width{ WidthInPixels };
 	const uint32_t height{ HeightInPixels };
 	const VkDeviceSize imageSize{ static_cast<VkDeviceSize>(WidthInPixels) * HeightInPixels * 4 };
-	const unsigned char* imageData{ RgbaPixels };
-
-	// Create staging buffer to hold loaded data, ready to copy to device
-	Rendering::AllocatedBuffer ImageStagingBuffer = m_GpuMemory.createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, Rendering::GpuMemoryUsage::StagingUpload, "Texture staging");
-	memcpy(ImageStagingBuffer.m_MappedData, imageData, static_cast<size_t>(imageSize));
-	m_GpuMemory.flushBufferWrites(ImageStagingBuffer);
 
 	// Create image to hold final texture (and the view the shaders read it through)
 	VkImageCreateInfo TextureImageCreateInfo{};
@@ -2489,26 +2452,13 @@ int Vulkanised::VulkanRenderer::createTextureImageFromRgbaPixels(const unsigned 
 	TextureImageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 	TextureImageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	Rendering::AllocatedImage TextureImage = m_GpuMemory.createImage(TextureImageCreateInfo, VK_IMAGE_ASPECT_COLOR_BIT, "Texture");
-	const VkImage texImage = TextureImage.m_Image;
 
-
-	// COPY DATA TO IMAGE
-	// Transition image to be DST for copy operation
-	Utilities::Vulkan::transitionImageLayout(m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool,
-		texImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-	// Copy image data
-	Utilities::Vulkan::copyImageBuffer(m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool, ImageStagingBuffer.m_Buffer, texImage, width, height);
-
-	// Transition image to be shader readable for shader usage
-	Utilities::Vulkan::transitionImageLayout(m_MainDevice.logicalDevice, m_GraphicsQueue, m_GraphicsCommandPool,
-		texImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	// The pixels are copied into staging memory right now (the caller may free them), and reach the image, ready to be
+	// sampled, with the next upload batch (before the next frame)
+	m_ResourceUploader.queueTextureUpload(TextureImage, RgbaPixels, imageSize);
 
 	// Add texture data to vector for reference
 	m_TextureImages.push_back(TextureImage);
-
-	// Destroy staging buffers
-	m_GpuMemory.destroyBuffer(ImageStagingBuffer);
 
 	// Return index of new texture image
 	return static_cast<int>(m_TextureImages.size() - 1);

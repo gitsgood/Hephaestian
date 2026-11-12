@@ -25,6 +25,7 @@
 #include "Rendering/GpuMemory.h"
 #include "Rendering/FrameStatistics.h"
 #include "Rendering/FrameResources.h"
+#include "Rendering/ResourceUploader.h"
 #include "utils/VulkanUtils.h"
 
 #include <array>
@@ -41,6 +42,10 @@ public:
 	// The new ECS-friendly rendering API
 	uint32_t loadMesh(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices, int texId);
 	void SubmitFrame(const std::vector<RenderInstance>& instances);
+
+	// Meshes and textures are uploaded in one batch at the start of the next SubmitFrame, without stalling. Call this to send
+	// them right away AND wait until they are on the GPU (e.g. at the end of a loading screen).
+	void flushPendingUploads() { m_ResourceUploader.submitPendingUploadsAndWait(); }
 
 	// - Multi-mesh models
 	// Creates a model out of meshes and textures that were already loaded. Returns the model identifier.
@@ -114,6 +119,7 @@ private:
 
 	// GPU memory: every buffer and image comes from here (VMA)
 	Rendering::GpuMemoryAllocator m_GpuMemory;
+	Rendering::ResourceUploader m_ResourceUploader;
 
 	// Diagnostics
 	Rendering::FrameStatistics m_FrameStatistics;
@@ -217,8 +223,6 @@ private:
 	VkPipeline m_GraphicsPipeline;
 	VkPipelineLayout m_PipelineLayout;
 
-	// - Pools
-	VkCommandPool m_GraphicsCommandPool;	// One-off commands (uploads). Frames record from their own pools.
 
 	// - Utility
 	VkFormat m_SwapchainImageFormat;
@@ -245,7 +249,6 @@ private:
 	void createDescriptorSetLayout();
 	void createGraphicsPipeline();
 	void createDepthBufferImage();
-	void createCommandPool();
 	void createTextureSampler();
 
 	void createDescriptorPool();
