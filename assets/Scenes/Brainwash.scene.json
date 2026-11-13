@@ -4,15 +4,18 @@
             "Bibi": "Sprites/Bibi",
             "Mizrachi": "Sprites/Mizrachi",
             "Baruch": "Sprites/Baruch",
-            "MikeOHearn": "Sprites/MikeOHearn.png",
-            "Ricardo": "Sprites/Ricardo"
+            "MikeOHearn": "Sprites/MikeOHearn.spritesheet.json",
+            "Ricardo": "Sprites/Ricardo",
+            "Skibidibop": "Sprites/Skibidibop",
+            "Bellybop": "Sprites/Belly"
         },
         "sounds": {
             "BibiSpeaks": "Audio/BibiSpeaks.mp3",
             "MizrachiSpeaks": "Audio/MizrachiSpeaks.mp3",
             "BaruchScreams": "Audio/BaruchScreams.mp3",
             "BabyDontHurtMe": "Audio/BabyDontHurtMe.mp3",
-            "UGotThat": "Audio/ugotthat.mp3"
+            "UGotThat": "Audio/ugotthat.mp3",
+            "SkibidiYesYes": "Audio/Skibidibop.mp3"
         }
     },
     "clearColour": [0, 0, 0],
@@ -30,54 +33,132 @@
         {
             "id": "BibisRotator",
             "position": [0,1,0],
-            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 1 }
         },
         {
             "id": "MizrachisRotator",
             "position": [0,1,0],
-            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 1 }
         },
         {
             "id": "BaruchsRotator",
             "position": [0,1,0],
-            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 1 }
         },
         {
             "id": "MikesRotator",
             "position": [1,1,0],
-            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+            "constantRotation": { "axis": [0, -1, 0], "degreesPerSecond": 20 }
         },
         {
             "id": "RicardosRotator",
             "position": [0,1,0],
-            "constantRotation": { "axis": [1, 1, 0], "degreesPerSecond": 10 }
+            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 15 }
+        },
+        {
+            "id": "SkibidiRotator",
+            "position": [0,1,0],
+            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 10 }
         },
         {
             "id": "BibiHimself",
             "parent": "BibisRotator",
-            "position": [10, 0, 0],
-            "scale": [1, 1, 1],
-            "sprite": { "sheet": "Bibi", "billboard": "faceCamera" },
+            "position": [0, 0, -35],
+            "rotationInDegrees": [0, 0, 0],
+            "scale": [20, 20, 20],
+            "sprite": { "sheet": "Bibi", "billboard": "" },
             "spriteAnimation": { "clip": "play" },
-            "audio": { "sound": "BibiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear"}
+            "audio": { "sound": "BibiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": ""}
+        },
+        {
+            "id": "BibiReflection",
+            "parent": "BibisRotator",
+            "position": [0, 0, -35],
+            "rotationInDegrees": [180, 0, 0],
+            "scale": [20, 20, 20],
+            "sprite": { "sheet": "Bibi", "billboard": "" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "BibiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": ""}
+        },
+        {
+            "id": "BibiHimself1",
+            "parent": "BibisRotator",
+            "position": [0, 0, 35],
+            "rotationInDegrees": [0, 0, 0],
+            "scale": [20, 20, 20],
+            "sprite": { "sheet": "Bibi", "billboard": "" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "BibiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": ""}
+        },
+        {
+            "id": "BibiReflection1",
+            "parent": "BibisRotator",
+            "position": [0, 0, 35],
+            "rotationInDegrees": [180, 0, 0],
+            "scale": [20, 20, 20],
+            "sprite": { "sheet": "Bibi", "billboard": "" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "BibiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": ""}
+        },
+        {
+            "id": "BibiHimself2",
+            "parent": "BibisRotator",
+            "position": [35, 0, 0],
+            "rotationInDegrees": [0, 90, 0],
+            "scale": [20, 20, 20],
+            "sprite": { "sheet": "Bibi", "billboard": "" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "BibiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": ""}
+        },
+        {
+            "id": "BibiReflection2",
+            "parent": "BibisRotator",
+            "position": [35, 0, 0],
+            "rotationInDegrees": [180, 90, 0],
+            "scale": [20, 20, 20],
+            "sprite": { "sheet": "Bibi", "billboard": "" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "BibiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": ""}
+        },
+        {
+            "id": "BibiHimself3",
+            "parent": "BibisRotator",
+            "position": [-35, 0, 0],
+            "rotationInDegrees": [0, 90, 0],
+            "scale": [20, 20, 20],
+            "sprite": { "sheet": "Bibi", "billboard": "" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "BibiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": ""}
+        },
+        {
+            "id": "BibiReflection3",
+            "parent": "BibisRotator",
+            "position": [-35, 0, 0],
+            "rotationInDegrees": [180, 90, 0],
+            "scale": [20, 20, 20],
+            "sprite": { "sheet": "Bibi", "billboard": "" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "BibiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": ""}
         },
         {
             "id": "MizrachiHimself",
             "parent": "MizrachisRotator",
-            "position": [10, 0, 0],
-            "scale": [1, 1, 1],
-            "sprite": { "sheet": "Mizrachi", "billboard": "faceCamera" },
+            "position": [0, 40, -45],
+            "rotationInDegrees": [90, 0, 0],
+            "scale": [20, 15, 20],
+            "sprite": { "sheet": "Mizrachi", "billboard": "" },
             "spriteAnimation": { "clip": "play" },
-            "audio": { "sound": "MizrachiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear"}
+            "audio": { "sound": "MizrachiSpeaks", "loop": true, "spatial": true, "minDistance": 20, "maxDistance": 60, "falloff": "", "rolloff": 0.1}
         },
         {
             "id": "BaruchTheOneAndOnly",
             "parent": "BaruchsRotator",
-            "position": [10, 0, 0],
-            "scale": [1, 1, 1],
-            "sprite": { "sheet": "Baruch", "billboard": "faceCamera" },
+            "position": [0, -40, 25],
+            "rotationInDegrees": [-90, 0, 0],
+            "scale": [20, 20, 20],
+            "sprite": { "sheet": "Baruch", "billboard": "" },
             "spriteAnimation": { "clip": "play" },
-            "audio": { "sound": "BaruchScreams", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear"}
+            "audio": { "sound": "BaruchScreams", "loop": true, "spatial": true, "minDistance": 5, "maxDistance": 30, "falloff": "", "rolloff": 0.6}
         },
         {
             "id": "MikeDontHurtMe",
@@ -92,10 +173,28 @@
             "id": "RicardoTheGoat",
             "parent": "RicardosRotator",
             "position": [10, 0, 0],
-            "scale": [1, 1, 1],
+            "scale": [2, 2, 2],
             "sprite": { "sheet": "Ricardo", "billboard": "faceCamera" },
             "spriteAnimation": { "clip": "play" },
             "audio": { "sound": "UGotThat", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear"}
+        },
+        {
+            "id": "SkibidiDomDomYesYesYes",
+            "parent": "SkibidiRotator",
+            "position": [10, -10, 0],
+            "scale": [5, 5, 5],
+            "sprite": { "sheet": "Skibidibop", "billboard": "faceCamera" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "SkibidiYesYes", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": ""}
+        },
+        {
+            "id": "Belly",
+            "parent": "SkibidiDomDomYesYesYes",
+            "position": [1, 3, 0],
+            "scale": [0.5, 0.5, 0.5],
+            "sprite": { "sheet": "Bellybop", "billboard": "faceCamera" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "SkibidiYesYes", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": ""}
         }
     ],
     "activeCamera": "PlayerCamera"
