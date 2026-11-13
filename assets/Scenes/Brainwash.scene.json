@@ -1,0 +1,102 @@
+{
+    "assets": {
+        "spriteSheets": {
+            "Bibi": "Sprites/Bibi",
+            "Mizrachi": "Sprites/Mizrachi",
+            "Baruch": "Sprites/Baruch",
+            "MikeOHearn": "Sprites/MikeOHearn.png",
+            "Ricardo": "Sprites/Ricardo"
+        },
+        "sounds": {
+            "BibiSpeaks": "Audio/BibiSpeaks.mp3",
+            "MizrachiSpeaks": "Audio/MizrachiSpeaks.mp3",
+            "BaruchScreams": "Audio/BaruchScreams.mp3",
+            "BabyDontHurtMe": "Audio/BabyDontHurtMe.mp3",
+            "UGotThat": "Audio/ugotthat.mp3"
+        }
+    },
+    "clearColour": [0, 0, 0],
+    "entities": [
+        {
+            "id": "Player",
+            "position": [0, 1, 0],
+            "freeFlyController": {}
+        },
+        {
+            "id": "PlayerCamera",
+            "parent": "Player",
+            "camera": {}
+        },
+        {
+            "id": "BibisRotator",
+            "position": [0,1,0],
+            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+        },
+        {
+            "id": "MizrachisRotator",
+            "position": [0,1,0],
+            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+        },
+        {
+            "id": "BaruchsRotator",
+            "position": [0,1,0],
+            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+        },
+        {
+            "id": "MikesRotator",
+            "position": [1,1,0],
+            "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+        },
+        {
+            "id": "RicardosRotator",
+            "position": [0,1,0],
+            "constantRotation": { "axis": [1, 1, 0], "degreesPerSecond": 10 }
+        },
+        {
+            "id": "BibiHimself",
+            "parent": "BibisRotator",
+            "position": [10, 0, 0],
+            "scale": [1, 1, 1],
+            "sprite": { "sheet": "Bibi", "billboard": "faceCamera" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "BibiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear"}
+        },
+        {
+            "id": "MizrachiHimself",
+            "parent": "MizrachisRotator",
+            "position": [10, 0, 0],
+            "scale": [1, 1, 1],
+            "sprite": { "sheet": "Mizrachi", "billboard": "faceCamera" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "MizrachiSpeaks", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear"}
+        },
+        {
+            "id": "BaruchTheOneAndOnly",
+            "parent": "BaruchsRotator",
+            "position": [10, 0, 0],
+            "scale": [1, 1, 1],
+            "sprite": { "sheet": "Baruch", "billboard": "faceCamera" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "BaruchScreams", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear"}
+        },
+        {
+            "id": "MikeDontHurtMe",
+            "parent": "MikesRotator",
+            "position": [11, 0, 0],
+            "scale": [1, 1, 1],
+            "sprite": { "sheet": "MikeOHearn", "billboard": "faceCamera" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "BabyDontHurtMe", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear"}
+        },
+        {
+            "id": "RicardoTheGoat",
+            "parent": "RicardosRotator",
+            "position": [10, 0, 0],
+            "scale": [1, 1, 1],
+            "sprite": { "sheet": "Ricardo", "billboard": "faceCamera" },
+            "spriteAnimation": { "clip": "play" },
+            "audio": { "sound": "UGotThat", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear"}
+        }
+    ],
+    "activeCamera": "PlayerCamera"
+}

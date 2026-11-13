@@ -46,6 +46,17 @@ set(ALSOFT_ENABLE_MODULES OFF CACHE BOOL "" FORCE)		# C++20 modules are optional
 set(ALSOFT_EAX OFF CACHE BOOL "" FORCE)					# Legacy Creative EAX effects: not needed
 set(LIBTYPE SHARED CACHE STRING "" FORCE)
 add_subdirectory(external/openal-soft SYSTEM)
+# Newer Apple clang (21+) trips OpenAL Soft's own forced -Werror=function-effects in its CoreAudio backend (its realtime
+# callbacks are lambdas converted to plain C function pointers). That's their code, not ours: keep it a warning, and mute
+# the deprecated-CoreAudio-API noise from the same file while we're at it. (Added after their flags, so these win.)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_options(OpenAL PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-Wno-error=function-effects -Wno-function-effects>
+        -Wno-deprecated-declarations
+        -Wno-deprecated-anon-enum-enum-conversion
+        -Wno-unused-variable
+    )
+endif()
 # - Decoders (MP3, WAV, FLAC, Ogg Vorbis): OpenAL only plays raw samples
 add_subdirectory(external/audio_decoders)
 

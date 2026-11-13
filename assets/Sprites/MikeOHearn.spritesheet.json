@@ -1,0 +1,9 @@
+{
+   "image": "MikeOHearn.png",
+   "grid": { "columns": 6, "rows": 6 },
+   "pixelsPerUnit": 32,
+   "filtering": "smooth",
+   "clips": [
+      { "name": "play", "framesPerSecond": 10 }
+   ]
+}
