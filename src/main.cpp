@@ -143,7 +143,7 @@ auto main(int ArgumentCount, char** Arguments) -> int
 
 	UI::HephaestianSettingsWidget SettingsWidget(SettingsManager, GameScene, AssetLibrary, renderer);
 
-	LOG("Controls: left click to capture the mouse, Escape to release it, WASD/QE to move, Shift to sprint, F12 for a screenshot. Settings and scenes are in the ImGui window.");
+	LOGH("Controls: left click to capture the mouse, Escape to release it, WASD/QE to move, Shift to sprint, F12 for a screenshot. Settings and scenes are in the ImGui window.");
 
 	float LastFrameTimeInSeconds = static_cast<float>(glfwGetTime());
 

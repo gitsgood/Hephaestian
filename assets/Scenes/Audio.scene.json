@@ -20,11 +20,17 @@
          "camera": {}
       },
       {
+         "id": "LaFemme center of rotation",
+         "position": [0, 1.6, 7],
+         "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+      },
+      {
          "id": "LaFemme",
          "name": "La Femme (sings in 3D: walk away and she fades out)",
-         "position": [0, 0, -2],
-         "scale": [1.6, 1.6, 1.6],
-         "sprite": { "sheet": "LaFemme", "billboard": "faceCameraUpright" },
+         "parent": "LaFemme center of rotation",
+         "position": [10, 0, 0],
+         "scale": [3, 3, 3],
+         "sprite": { "sheet": "LaFemme", "billboard": "faceCamera" },
          "spriteAnimation": { "clip": "play" },
          "audio": { "sound": "DivineCreature", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear" }
       }
