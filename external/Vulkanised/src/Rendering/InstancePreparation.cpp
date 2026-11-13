@@ -57,9 +57,9 @@ Vulkanised::VulkanRenderer::FrameDrawCommandCounts Vulkanised::VulkanRenderer::p
 	for (size_t CurrentInstanceIndex{ 0 }; CurrentInstanceIndex < SubmittedInstances.size(); ++CurrentInstanceIndex)
 	{
 		const RenderInstance& CurrentInstance = SubmittedInstances[CurrentInstanceIndex];
-		if (CurrentInstance.meshID >= MeshCount || CurrentInstance.textureID >= m_TextureCount)
+		if (CurrentInstance.meshID >= MeshCount || !isTextureIdentifierValid(CurrentInstance.textureID))
 		{
-			++InvalidInstanceCount;	// A garbage or failed asset: skipped, reported below
+			++InvalidInstanceCount;	// A garbage, failed or destroyed asset: skipped, reported below
 			continue;
 		}
 
@@ -135,7 +135,7 @@ Vulkanised::VulkanRenderer::FrameDrawCommandCounts Vulkanised::VulkanRenderer::p
 		DestinationInstance.m_ModelMatrix = SourceInstance.transform;
 		DestinationInstance.m_TextureCoordinateRect = SourceInstance.m_TextureCoordinateRect;
 		DestinationInstance.m_Tint = SourceInstance.m_Tint;
-		DestinationInstance.m_TextureIndex = SourceInstance.textureID;
+		DestinationInstance.m_TextureIndex = getTextureSlot(SourceInstance.textureID);	// The shader indexes the bindless array: the slot alone
 		DestinationInstance.m_Flags = SourceInstance.m_Flags;
 		DestinationInstance.m_PivotOffset = SourceInstance.m_PivotOffset;
 	}

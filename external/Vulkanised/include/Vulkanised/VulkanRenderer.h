@@ -238,10 +238,10 @@ private:
 	VkDescriptorPool m_BindlessTexturePool;
 	VkDescriptorSet m_BindlessTextureSet{ VK_NULL_HANDLE };
 	uint32_t m_BindlessTextureCapacity{ 0 };	// Array size (GPU limits permitting)
-	uint32_t m_TextureCount{ 0 };				// Slots written so far: a texture identifier is its slot
+	uint32_t m_TextureCount{ 0 };				// Slots ever handed out (the highest slot in use is below this)
 
 	// - Assets
-	std::vector<Rendering::AllocatedImage> m_TextureImages;
+	std::vector<Rendering::AllocatedImage> m_TextureImages;	// Per texture slot (empty while the slot is free)
 
 	// - Pipeline
 	VkPipeline m_GraphicsPipeline;
@@ -350,10 +350,11 @@ private:
 	VkShaderModule createShaderModule(const std::vector<uint32_t>& code) const;
 
 	public:
-	int createTextureImage(std::string_view fileName, const Rendering::TextureOptions& Options);
+	// TEXTURE IDENTIFIERS: the texture's slot in the bindless array (low bits) plus how many times that slot has been reused
+	// (high bits). A destroyed texture's identifier stops working at once, and stays dead even after its slot holds another
+	// texture: an old identifier can never draw someone else's texture. Always positive as an int (31 bits).
 	// Loads an image file (relative names come from assets/Textures). Returns the texture identifier.
 	int createTexture(std::string_view fileName, const Rendering::TextureOptions& Options = {});
-	int createTextureDescriptor(VkImageView textureImage, VkSampler TextureSampler);
 
 	// - Textures that don't come from a file in assets/Textures (model importers need these)
 	// Raw 8-bit RGBA pixels, WidthInPixels * HeightInPixels * 4 bytes. Returns the texture identifier.
@@ -362,10 +363,42 @@ private:
 	int createTextureFromEncodedImageInMemory(const unsigned char* EncodedImageBytes, size_t EncodedImageByteCount, const Rendering::TextureOptions& Options = {});
 	// 1x1 white texture, for materials with no texture (the shader multiplies it by the vertex colour). Created on first use.
 	[[nodiscard]] uint32_t getDefaultWhiteTextureIdentifier();
+
+	// Frees a texture. It stops being drawn right away (instances and model pieces still using it are skipped, with a
+	// warning), its GPU memory goes once every frame that may still read it is done (a couple of frames, no stall), then its
+	// slot is reused. False (and logged) for an identifier that's already dead, and for the default white texture.
+	bool destroyTexture(uint32_t TextureIdentifier);
+	[[nodiscard]] bool isTextureIdentifierValid(uint32_t TextureIdentifier) const noexcept;
+	[[nodiscard]] uint32_t getLiveTextureCount() const noexcept { return m_LiveTextureCount; }
 	private:
-	int createTextureImageFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels, const Rendering::TextureOptions& Options);
-	int createTextureViewAndDescriptorForImage(int TextureImageIndex, const Rendering::TextureOptions& Options);
+	static constexpr uint32_t c_TextureSlotBitCount{ 14 };	// 16384 slots (Utilities::Vulkan::c_MaxBindlessTextures)
+	static constexpr uint32_t c_TextureSlotMask{ (1u << c_TextureSlotBitCount) - 1 };
+	static constexpr uint32_t c_TextureSlotReuseCountLimit{ 1u << (31 - c_TextureSlotBitCount) };	// Wraps around after this many reuses of one slot
+	[[nodiscard]] static constexpr uint32_t getTextureSlot(uint32_t TextureIdentifier) noexcept { return TextureIdentifier & c_TextureSlotMask; }
+
+	Rendering::AllocatedImage createTextureImage(std::string_view fileName, const Rendering::TextureOptions& Options);
+	Rendering::AllocatedImage createTextureImageFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels, const Rendering::TextureOptions& Options);
+	// Gives the image a slot (a reused one if any is free) and its descriptor. Returns the texture identifier.
+	int createTextureDescriptorForImage(const Rendering::AllocatedImage& TextureImage, const Rendering::TextureOptions& Options);
+	void writeTextureDescriptor(uint32_t TextureSlot, VkImageView TextureImageView, VkSampler TextureSampler);
+	// Called once per frame, after its fence: frees destroyed textures no frame in flight can still be reading
+	void releaseRetiredTextures(bool ShouldReleaseAllNow);
 	std::optional<uint32_t> m_DefaultWhiteTextureIdentifier;
+
+	// - Texture slots
+	std::vector<uint32_t> m_TextureSlotReuseCounts;	// Per slot: the high bits of its current identifier
+	std::vector<bool> m_IsTextureSlotInUse;
+	std::vector<uint32_t> m_FreeTextureSlots;		// Released slots, reused first (newest last)
+	uint32_t m_LiveTextureCount{ 0 };
+	struct RetiredTexture
+	{
+		uint32_t m_TextureSlot{ 0 };
+		Rendering::AllocatedImage m_TextureImage;
+		uint64_t m_FrameCountThatMustComplete{ 0 };	// Safe to free once this many frames have finished on the GPU
+	};
+	std::vector<RetiredTexture> m_RetiredTextures;
+	uint64_t m_SubmittedFrameCount{ 0 };	// Frames sent to the GPU so far
+	uint64_t m_CompletedFrameCount{ 0 };	// Frames known to be finished (every frame before this number is done)
 	// -- Loader Functions
 	stbi_uc* loadTextureFile(std::string_view fileName, int* width, int* height, VkDeviceSize* imageSize);
 };

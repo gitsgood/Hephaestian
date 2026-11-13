@@ -223,6 +223,7 @@ void HephaestianSettingsWidget::drawRendererStatisticsSection()
 	ImGui::Text("GPU memory: %.1f MB used, %.1f MB reserved, %.0f MB budget", MemoryStatistics.m_UsedBytes / c_BytesPerMegabyte,
 		MemoryStatistics.m_ReservedBytes / c_BytesPerMegabyte, MemoryStatistics.m_DeviceLocalBudgetBytes / c_BytesPerMegabyte);
 	ImGui::Text("Allocations: %u resources in %u memory blocks", MemoryStatistics.m_AllocationCount, MemoryStatistics.m_DeviceMemoryBlockCount);
+	ImGui::Text("Textures: %u loaded", m_Renderer.getLiveTextureCount());
 }
 
 }

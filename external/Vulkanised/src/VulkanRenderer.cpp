@@ -172,6 +172,16 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	recordFrameStatistic(m_FrameStatistics.m_CpuWaitForGpuTimeInMilliseconds, std::chrono::duration<float, std::milli>(GpuWaitEndTime - SubmitFrameStartTime).count());
 	readFinishedTimestampQueries(CurrentFrame);
 
+	// That frame is finished, and so is everything submitted before it: textures destroyed since then can really go now
+	if (CurrentFrame.m_SubmittedFrameNumber.has_value())
+	{
+		m_CompletedFrameCount = std::max(m_CompletedFrameCount, CurrentFrame.m_SubmittedFrameNumber.value() + 1);
+	}
+	if (!m_RetiredTextures.empty())
+	{
+		releaseRetiredTextures(false);
+	}
+
 	// ...then get an image to draw into. The fence is only reset once this frame is sure to be submitted: it used to be
 	// reset BEFORE acquiring, so an out-of-date acquire returned with it unsignalled, and the next wait on it never ended.
 	uint32_t SwapchainImageIndex{ 0 };
@@ -233,6 +243,7 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	{
 		LOGNTHROW("Failed to submit a frame's command buffer");
 	}
+	CurrentFrame.m_SubmittedFrameNumber = m_SubmittedFrameCount++;
 
 	const bool IsScreenshotFrame = m_ShouldCaptureScreenshotThisFrame;
 	if (IsScreenshotFrame)
@@ -679,7 +690,7 @@ uint32_t Vulkanised::VulkanRenderer::createModel(const std::vector<ModelSubmesh>
 			LOGW("Model submesh references mesh {}, which does not exist. Skipping that submesh.", CurrentSubmesh.m_MeshIdentifier);
 			continue;
 		}
-		if (CurrentSubmesh.m_TextureIdentifier >= m_TextureCount)
+		if (!isTextureIdentifierValid(CurrentSubmesh.m_TextureIdentifier))
 		{
 			LOGW("Model submesh references texture {}, which does not exist. Skipping that submesh.", CurrentSubmesh.m_TextureIdentifier);
 			continue;
@@ -791,9 +802,10 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 		*CurrentSampler = VK_NULL_HANDLE;
 	}
 
+	releaseRetiredTextures(true);	// The device is idle by now: textures waiting on frames in flight can go too
 	for (Rendering::AllocatedImage& CurrentTextureImage : m_TextureImages)
 	{
-		m_GpuMemory.destroyImage(CurrentTextureImage);
+		m_GpuMemory.destroyImage(CurrentTextureImage);	// (Free slots hold an empty image: nothing to do)
 	}
 	m_TextureImages.clear();
 	m_GpuMemory.destroyBuffer(m_ScreenshotBuffer);	// Only alive if the app closed with a screenshot still pending
@@ -1092,6 +1104,7 @@ void Vulkanised::VulkanRenderer::createLogicalDevice()
 	EnabledVulkan12Features.runtimeDescriptorArray = VK_TRUE;
 	EnabledVulkan12Features.descriptorBindingPartiallyBound = VK_TRUE;
 	EnabledVulkan12Features.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+	EnabledVulkan12Features.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;	// Rewriting texture slots no frame in flight reads (new or reused ones)
 	EnabledVulkan12Features.descriptorBindingVariableDescriptorCount = VK_TRUE;
 	EnabledVulkan12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
 
@@ -1329,7 +1342,8 @@ void Vulkanised::VulkanRenderer::createDescriptorSetLayout()
 	BindlessTexturesBinding.descriptorCount = m_BindlessTextureCapacity;
 	BindlessTexturesBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	constexpr VkDescriptorBindingFlags c_BindlessTexturesBindingFlags{ VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT };
+	constexpr VkDescriptorBindingFlags c_BindlessTexturesBindingFlags{ VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT
+		| VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT };
 	VkDescriptorSetLayoutBindingFlagsCreateInfo BindingFlagsCreateInfo{};
 	BindingFlagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
 	BindingFlagsCreateInfo.bindingCount = 1;
@@ -2272,6 +2286,7 @@ bool Vulkanised::VulkanRenderer::checkDeviceSuitable(VkPhysicalDevice device)
 		SupportedFeatures.features.samplerAnisotropy && SupportedFeatures.features.multiDrawIndirect && SupportedFeatures.features.drawIndirectFirstInstance
 		&& SupportedVulkan12Features.descriptorIndexing && SupportedVulkan12Features.runtimeDescriptorArray && SupportedVulkan12Features.descriptorBindingPartiallyBound
 		&& SupportedVulkan12Features.descriptorBindingSampledImageUpdateAfterBind && SupportedVulkan12Features.descriptorBindingVariableDescriptorCount
+		&& SupportedVulkan12Features.descriptorBindingUpdateUnusedWhilePending
 		&& SupportedVulkan12Features.shaderSampledImageArrayNonUniformIndexing
 		&& SupportedVulkan13Features.dynamicRendering && SupportedVulkan13Features.synchronization2 && SupportedVulkan13Features.shaderDemoteToHelperInvocation;
 	if (!AreRequiredFeaturesSupported)
@@ -2613,22 +2628,22 @@ VkShaderModule Vulkanised::VulkanRenderer::createShaderModule(const std::vector<
 	return shaderModule;
 }
 
-int Vulkanised::VulkanRenderer::createTextureImage(std::string_view fileName, const Rendering::TextureOptions& Options)
+Vulkanised::Rendering::AllocatedImage Vulkanised::VulkanRenderer::createTextureImage(std::string_view fileName, const Rendering::TextureOptions& Options)
 {
 	// Load image file
 	int width, height;
 	VkDeviceSize imageSize;
 	stbi_uc* imageData = loadTextureFile(fileName, &width, &height, &imageSize);
 
-	const int CreatedTextureImageIndex = createTextureImageFromRgbaPixels(imageData, static_cast<uint32_t>(width), static_cast<uint32_t>(height), Options);
+	Rendering::AllocatedImage CreatedTextureImage = createTextureImageFromRgbaPixels(imageData, static_cast<uint32_t>(width), static_cast<uint32_t>(height), Options);
 
 	// Free original image data
 	stbi_image_free(imageData);
 
-	return CreatedTextureImageIndex;
+	return CreatedTextureImage;
 }
 
-int Vulkanised::VulkanRenderer::createTextureImageFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels, const Rendering::TextureOptions& Options)
+Vulkanised::Rendering::AllocatedImage Vulkanised::VulkanRenderer::createTextureImageFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels, const Rendering::TextureOptions& Options)
 {
 	const VkDeviceSize imageSize{ static_cast<VkDeviceSize>(WidthInPixels) * HeightInPixels * 4 };
 
@@ -2662,12 +2677,7 @@ int Vulkanised::VulkanRenderer::createTextureImageFromRgbaPixels(const unsigned 
 	// The pixels are copied into staging memory right now (the caller may free them), and reach the image, mips and all,
 	// ready to be sampled, with the next upload batch (before the next frame)
 	m_ResourceUploader.queueTextureUpload(TextureImage, RgbaPixels, imageSize);
-
-	// Add texture data to vector for reference
-	m_TextureImages.push_back(TextureImage);
-
-	// Return index of new texture image
-	return static_cast<int>(m_TextureImages.size() - 1);
+	return TextureImage;
 }
 
 bool Vulkanised::VulkanRenderer::canGenerateMipmapsForFormat(VkFormat TextureFormat) const
@@ -2681,7 +2691,7 @@ bool Vulkanised::VulkanRenderer::canGenerateMipmapsForFormat(VkFormat TextureFor
 int Vulkanised::VulkanRenderer::createTexture(std::string_view fileName, const Rendering::TextureOptions& Options)
 {
 	// Create Texture Image and get its location in array
-	return createTextureViewAndDescriptorForImage(createTextureImage(fileName, Options), Options);
+	return createTextureDescriptorForImage(createTextureImage(fileName, Options), Options);
 }
 
 int Vulkanised::VulkanRenderer::createTextureFromRgbaPixels(const unsigned char* RgbaPixels, uint32_t WidthInPixels, uint32_t HeightInPixels, const Rendering::TextureOptions& Options)
@@ -2691,7 +2701,7 @@ int Vulkanised::VulkanRenderer::createTextureFromRgbaPixels(const unsigned char*
 		LOGW("Tried to create a texture from no pixels, using the default white texture instead.");
 		return static_cast<int>(getDefaultWhiteTextureIdentifier());
 	}
-	return createTextureViewAndDescriptorForImage(createTextureImageFromRgbaPixels(RgbaPixels, WidthInPixels, HeightInPixels, Options), Options);
+	return createTextureDescriptorForImage(createTextureImageFromRgbaPixels(RgbaPixels, WidthInPixels, HeightInPixels, Options), Options);
 }
 
 int Vulkanised::VulkanRenderer::createTextureFromEncodedImageInMemory(const unsigned char* EncodedImageBytes, size_t EncodedImageByteCount, const Rendering::TextureOptions& Options)
@@ -2729,39 +2739,125 @@ uint32_t Vulkanised::VulkanRenderer::getDefaultWhiteTextureIdentifier()
 	return m_DefaultWhiteTextureIdentifier.value();
 }
 
-int Vulkanised::VulkanRenderer::createTextureViewAndDescriptorForImage(int TextureImageIndex, const Rendering::TextureOptions& Options)
+int Vulkanised::VulkanRenderer::createTextureDescriptorForImage(const Rendering::AllocatedImage& TextureImage, const Rendering::TextureOptions& Options)
 {
-	// The image already has its view (the allocator made it): create the texture descriptor, and return location of set with texture
-	const VkSampler ChosenSampler = Options.m_Filtering == Rendering::TextureFiltering::Pixelated ? m_PixelatedTextureSampler : m_SmoothTextureSampler;
-	return createTextureDescriptor(m_TextureImages[TextureImageIndex].m_ImageView, ChosenSampler);
-}
+	static_assert(Utilities::Vulkan::c_MaxBindlessTextures <= (1u << c_TextureSlotBitCount), "Texture identifiers keep the slot in their low c_TextureSlotBitCount bits");
 
-int Vulkanised::VulkanRenderer::createTextureDescriptor(VkImageView textureImage, VkSampler TextureSampler)
-{
-	// The texture's identifier is simply the next free slot of the bindless array
-	if (m_TextureCount >= m_BindlessTextureCapacity)
+	// A slot freed by destroyTexture first (once no frame can still read its old texture), a brand new one otherwise
+	uint32_t TextureSlot{ 0 };
+	if (!m_FreeTextureSlots.empty())
 	{
-		LOGNTHROW("Out of texture slots ({} max). Raise Utilities::Vulkan::c_MaxBindlessTextures if this is legit.", m_BindlessTextureCapacity);
+		TextureSlot = m_FreeTextureSlots.back();
+		m_FreeTextureSlots.pop_back();
+	}
+	else if (m_TextureCount < m_BindlessTextureCapacity)
+	{
+		TextureSlot = m_TextureCount++;
+		m_TextureImages.resize(m_TextureCount);
+		m_TextureSlotReuseCounts.resize(m_TextureCount, 0);
+		m_IsTextureSlotInUse.resize(m_TextureCount, false);
+	}
+	else
+	{
+		Rendering::AllocatedImage ImageWithoutSlot = TextureImage;
+		m_ResourceUploader.submitPendingUploadsAndWait();	// Its upload may be queued: done with it before it goes
+		m_GpuMemory.destroyImage(ImageWithoutSlot);
+		LOGNTHROW("Out of texture slots ({} textures alive at once at most). Destroy unused textures, or raise Utilities::Vulkan::c_MaxBindlessTextures if this is legit.", m_BindlessTextureCapacity);
 	}
 
+	const VkSampler ChosenSampler = Options.m_Filtering == Rendering::TextureFiltering::Pixelated ? m_PixelatedTextureSampler : m_SmoothTextureSampler;
+	writeTextureDescriptor(TextureSlot, TextureImage.m_ImageView, ChosenSampler);
+	m_TextureImages[TextureSlot] = TextureImage;
+	m_IsTextureSlotInUse[TextureSlot] = true;
+	++m_LiveTextureCount;
+	return static_cast<int>((m_TextureSlotReuseCounts[TextureSlot] << c_TextureSlotBitCount) | TextureSlot);
+}
+
+void Vulkanised::VulkanRenderer::writeTextureDescriptor(uint32_t TextureSlot, VkImageView TextureImageView, VkSampler TextureSampler)
+{
 	VkDescriptorImageInfo TextureImageInfo{};
 	TextureImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	TextureImageInfo.imageView = textureImage;
+	TextureImageInfo.imageView = TextureImageView;
 	TextureImageInfo.sampler = TextureSampler;
 
 	VkWriteDescriptorSet TextureDescriptorWrite{};
 	TextureDescriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	TextureDescriptorWrite.dstSet = m_BindlessTextureSet;
 	TextureDescriptorWrite.dstBinding = 0;
-	TextureDescriptorWrite.dstArrayElement = m_TextureCount;
+	TextureDescriptorWrite.dstArrayElement = TextureSlot;
 	TextureDescriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	TextureDescriptorWrite.descriptorCount = 1;
 	TextureDescriptorWrite.pImageInfo = &TextureImageInfo;
 
-	// Allowed while frames in flight use the set (update-after-bind): those frames never sample this new slot
+	// Allowed while frames in flight use the set (update-after-bind + update-unused-while-pending): none of them samples
+	// this slot (a new slot was never drawn, a reused one only after every frame that drew its old texture finished)
 	vkUpdateDescriptorSets(m_MainDevice.logicalDevice, 1, &TextureDescriptorWrite, 0, nullptr);
+}
 
-	return static_cast<int>(m_TextureCount++);
+bool Vulkanised::VulkanRenderer::isTextureIdentifierValid(uint32_t TextureIdentifier) const noexcept
+{
+	const uint32_t TextureSlot = getTextureSlot(TextureIdentifier);
+	return TextureSlot < m_TextureCount && m_IsTextureSlotInUse[TextureSlot]
+		&& (TextureIdentifier >> c_TextureSlotBitCount) == m_TextureSlotReuseCounts[TextureSlot];
+}
+
+bool Vulkanised::VulkanRenderer::destroyTexture(uint32_t TextureIdentifier)
+{
+	if (!isTextureIdentifierValid(TextureIdentifier))
+	{
+		LOGW("Tried to destroy texture {}, which doesn't exist (anymore).", TextureIdentifier);
+		return false;
+	}
+	if (m_DefaultWhiteTextureIdentifier.has_value() && TextureIdentifier == m_DefaultWhiteTextureIdentifier.value())
+	{
+		LOGW("The default white texture is shared by everything untextured, it can't be destroyed.");
+		return false;
+	}
+
+	// 1. DEAD RIGHT AWAY: the next reuse count makes this identifier (and any copy of it) invalid from now on, so no
+	//    frame recorded from here on draws it
+	const uint32_t TextureSlot = getTextureSlot(TextureIdentifier);
+	m_TextureSlotReuseCounts[TextureSlot] = (m_TextureSlotReuseCounts[TextureSlot] + 1) % c_TextureSlotReuseCountLimit;
+	m_IsTextureSlotInUse[TextureSlot] = false;
+	--m_LiveTextureCount;
+
+	// 2. FREED LATER: its upload may still be queued, so that goes to the GPU now, ahead of the next frame. Once that next
+	//    frame has finished, so has everything submitted before it (its upload, every earlier frame that drew it).
+	m_ResourceUploader.submitPendingUploads();
+	m_RetiredTextures.push_back({ TextureSlot, m_TextureImages[TextureSlot], m_SubmittedFrameCount + 1 });
+	m_TextureImages[TextureSlot] = {};
+	return true;
+}
+
+void Vulkanised::VulkanRenderer::releaseRetiredTextures(bool ShouldReleaseAllNow)
+{
+	// Freed slots point at the white texture until they're reused (never at a dead image)
+	const uint32_t WhiteTextureSlot = ShouldReleaseAllNow ? 0 : getTextureSlot(getDefaultWhiteTextureIdentifier());
+	uint32_t ReleasedTextureCount{ 0 };
+	uint64_t ReleasedBytesEstimate{ 0 };
+	std::erase_if(m_RetiredTextures, [&](RetiredTexture& CurrentRetiredTexture)
+	{
+		if (!ShouldReleaseAllNow && m_CompletedFrameCount < CurrentRetiredTexture.m_FrameCountThatMustComplete)
+		{
+			return false;	// A frame in flight may still read it
+		}
+		const Rendering::AllocatedImage& Image = CurrentRetiredTexture.m_TextureImage;
+		const uint64_t BaseLevelBytes = static_cast<uint64_t>(Image.m_Extent.width) * Image.m_Extent.height * 4;
+		ReleasedBytesEstimate += Image.m_MipLevelCount > 1 ? BaseLevelBytes * 4 / 3 : BaseLevelBytes;	// A full mip chain adds a third
+		++ReleasedTextureCount;
+
+		m_GpuMemory.destroyImage(CurrentRetiredTexture.m_TextureImage);
+		if (!ShouldReleaseAllNow)
+		{
+			writeTextureDescriptor(CurrentRetiredTexture.m_TextureSlot, m_TextureImages[WhiteTextureSlot].m_ImageView, m_SmoothTextureSampler);
+			m_FreeTextureSlots.push_back(CurrentRetiredTexture.m_TextureSlot);
+		}
+		return true;
+	});
+	if (ReleasedTextureCount > 0 && !ShouldReleaseAllNow)
+	{
+		LOG("Released {} destroyed texture(s), about {:.1f} MB of GPU memory.", ReleasedTextureCount, static_cast<double>(ReleasedBytesEstimate) / (1024.0 * 1024.0));
+	}
 }
 
 stbi_uc* Vulkanised::VulkanRenderer::loadTextureFile(std::string_view fileName, int* width, int* height, VkDeviceSize* imageSize)

@@ -1,5 +1,6 @@
 #include "Hephaestian/Assets/AssetLibrary.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <future>
@@ -223,7 +224,7 @@ std::shared_ptr<const SpriteSheet> AssetLibrary::getOrLoadSpriteSheet(const std:
 	auto LoadedSpriteSheet = std::make_shared<SpriteSheet>(std::move(Description->m_SpriteSheet));
 	const std::vector<std::filesystem::path>& PageImageFilePaths = Description->m_PageImageFilePaths;
 	const std::size_t PagesPerBatch = std::max<std::size_t>(std::thread::hardware_concurrency(), 1);
-	struct DecodedPage { unsigned char* m_RgbaPixels{ nullptr }; int m_WidthInPixels{ 0 }; int m_HeightInPixels{ 0 }; };
+	struct DecodedPage { unsigned char* m_RgbaPixels{ nullptr }; int m_WidthInPixels{ 0 }; int m_HeightInPixels{ 0 }; std::string m_FailureReason; };
 	for (std::size_t BatchFirstPageIndex{ 0 }; BatchFirstPageIndex < PageImageFilePaths.size(); BatchFirstPageIndex += PagesPerBatch)
 	{
 		const std::size_t BatchEndPageIndex = std::min(BatchFirstPageIndex + PagesPerBatch, PageImageFilePaths.size());
@@ -234,6 +235,10 @@ std::shared_ptr<const SpriteSheet> AssetLibrary::getOrLoadSpriteSheet(const std:
 			{
 				DecodedPage Page{};
 				Page.m_RgbaPixels = decodeSpriteSheetPage(Description.value(), PageImageFilePaths[CurrentPageIndex], Page.m_WidthInPixels, Page.m_HeightInPixels);
+				if (Page.m_RgbaPixels == nullptr)
+				{
+					Page.m_FailureReason = stbi_failure_reason();	// stb_image keeps it per thread: read it on this one
+				}
 				return Page;
 			}));
 		}
@@ -245,7 +250,7 @@ std::shared_ptr<const SpriteSheet> AssetLibrary::getOrLoadSpriteSheet(const std:
 			const DecodedPage Page = PagesBeingDecoded[CurrentPageIndex - BatchFirstPageIndex].get();
 			if (Page.m_RgbaPixels == nullptr)
 			{
-				LOGE("Sprite sheet {}: its image {} couldn't be loaded ({}).", AbsoluteSpriteSheetPathAsText, PageImageFilePaths[CurrentPageIndex].string(), stbi_failure_reason());
+				LOGE("Sprite sheet {}: its image {} couldn't be loaded ({}).", AbsoluteSpriteSheetPathAsText, PageImageFilePaths[CurrentPageIndex].string(), Page.m_FailureReason);
 				HasBatchFailed = true;
 				continue;
 			}
@@ -258,7 +263,11 @@ std::shared_ptr<const SpriteSheet> AssetLibrary::getOrLoadSpriteSheet(const std:
 		}
 		if (HasBatchFailed)
 		{
-			return nullptr;	// (The pages already uploaded stay, unused, until the renderer shuts down)
+			for (const std::uint32_t UploadedPageTextureIdentifier : LoadedSpriteSheet->m_PageTextureIdentifiers)
+			{
+				m_Renderer.destroyTexture(UploadedPageTextureIdentifier);	// The pages that did load are of no use alone
+			}
+			return nullptr;
 		}
 		if (PageImageFilePaths.size() > 1)
 		{
@@ -275,6 +284,47 @@ std::shared_ptr<const SpriteSheet> AssetLibrary::getOrLoadSpriteSheet(const std:
 		LoadedSpriteSheet->m_PageTextureIdentifiers.size(), LoadedSpriteSheet->m_Clips.size(), LoadTimeInMilliseconds);
 	m_SpriteSheetsByAbsolutePath.emplace(AbsoluteSpriteSheetPathAsText, LoadedSpriteSheet);
 	return LoadedSpriteSheet;
+}
+
+void AssetLibrary::releaseAssetsUnusedByScene(std::span<const std::uint32_t> TextureIdentifiersStillInUse)
+{
+	// Sprite sheets: still held by something (sprites, the scene being loaded, game code) = still used
+	std::size_t ReleasedSpriteSheetCount{ 0 };
+	std::size_t ReleasedPageCount{ 0 };
+	std::erase_if(m_SpriteSheetsByAbsolutePath, [this, &ReleasedSpriteSheetCount, &ReleasedPageCount](const auto& CachedSpriteSheetEntry)
+	{
+		const std::shared_ptr<const SpriteSheet>& CachedSpriteSheet = CachedSpriteSheetEntry.second;
+		if (CachedSpriteSheet.use_count() > 1)
+		{
+			return false;
+		}
+		for (const std::uint32_t PageTextureIdentifier : CachedSpriteSheet->m_PageTextureIdentifiers)
+		{
+			m_Renderer.destroyTexture(PageTextureIdentifier);
+		}
+		++ReleasedSpriteSheetCount;
+		ReleasedPageCount += CachedSpriteSheet->m_PageTextureIdentifiers.size();
+		return true;
+	});
+
+	// Standalone textures: only the scene knows which ones it uses (as texture overrides, through its asset table)
+	std::size_t ReleasedTextureCount{ 0 };
+	std::erase_if(m_TextureIdentifiersByAbsolutePath, [this, TextureIdentifiersStillInUse, &ReleasedTextureCount](const auto& CachedTextureEntry)
+	{
+		if (std::ranges::find(TextureIdentifiersStillInUse, CachedTextureEntry.second) != TextureIdentifiersStillInUse.end())
+		{
+			return false;
+		}
+		m_Renderer.destroyTexture(CachedTextureEntry.second);
+		++ReleasedTextureCount;
+		return true;
+	});
+
+	if (ReleasedSpriteSheetCount > 0 || ReleasedTextureCount > 0)
+	{
+		LOG("Unloaded what the new scene doesn't use: {} sprite sheet(s) ({} page textures), {} texture(s). Their GPU memory goes within a couple of frames.",
+			ReleasedSpriteSheetCount, ReleasedPageCount, ReleasedTextureCount);
+	}
 }
 
 }

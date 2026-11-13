@@ -1,6 +1,9 @@
 #ifndef VULKANISED_RENDERING_FRAMERESOURCES_H
 #define VULKANISED_RENDERING_FRAMERESOURCES_H
 
+#include <cstdint>
+#include <optional>
+
 #include <vulkan/vulkan.h>
 
 #include "Vulkanised/Rendering/GpuMemory.h"
@@ -31,6 +34,8 @@ struct FrameResources
 
 	VkQueryPool m_TimestampQueryPool{ VK_NULL_HANDLE };			// [0] start of the frame's commands, [1] end
 	bool m_HasTimestampQueriesToRead{ false };
+
+	std::optional<uint64_t> m_SubmittedFrameNumber;					// Which frame (counting from 0) last went to the GPU with these
 };
 
 }

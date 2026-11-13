@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -53,6 +54,14 @@ public:
 	// A sprite sheet (sidecar .spritesheet.json or Aseprite JSON export, see SpriteSheet.h): its texture uploaded, frames and
 	// clips ready. Shared by every sprite using it. nullptr (and logged) if it couldn't be loaded.
 	[[nodiscard]] std::shared_ptr<const SpriteSheet> getOrLoadSpriteSheet(const std::filesystem::path& SpriteSheetRelativePath);
+
+	// SCENE SWITCHES (Scene::loadFromJsonFile calls this once the new scene is loaded, so assets both scenes use are never
+	// reloaded). Frees:
+	//	- every sprite sheet nothing holds anymore (only this library's cache does)
+	//	- every texture from getOrLoadTexture that isn't in TextureIdentifiersStillInUse
+	// Models (and the textures they brought along) stay for now: their geometry can't be freed yet.
+	// Built for one scene at a time: a second scene sharing this library would lose the textures only it uses.
+	void releaseAssetsUnusedByScene(std::span<const std::uint32_t> TextureIdentifiersStillInUse);
 
 private:
 	Vulkanised::VulkanRenderer& m_Renderer;

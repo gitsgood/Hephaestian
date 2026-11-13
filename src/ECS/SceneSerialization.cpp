@@ -327,6 +327,17 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 
 	LOG("Loaded scene {}: {} entities, {} models, {} textures, {} sprite sheets", SceneFilePath.filename().string(), EntitiesBySceneIdentifier.size(),
 		ModelIdentifiersByAssetName.size(), TextureIdentifiersByAssetName.size(), SpriteSheetsByAssetName.size());
+
+	// 4. UNLOAD WHAT THE PREVIOUS SCENE LEFT BEHIND, now that everything this one needs is loaded (so assets both use were
+	//    simply reused). Whatever is in this scene's asset table stays, even if no entity uses it yet: game code may spawn
+	//    some later. (SpriteSheetsByAssetName still holds this scene's sheets, which is what keeps them.)
+	std::vector<std::uint32_t> TextureIdentifiersStillInUse;
+	TextureIdentifiersStillInUse.reserve(TextureIdentifiersByAssetName.size());
+	for (const auto& [TextureAssetName, TextureIdentifier] : TextureIdentifiersByAssetName)
+	{
+		TextureIdentifiersStillInUse.push_back(TextureIdentifier);
+	}
+	AssetLibraryToLoadFrom.releaseAssetsUnusedByScene(TextureIdentifiersStillInUse);
 	return true;
 }
 
