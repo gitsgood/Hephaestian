@@ -23,6 +23,13 @@ struct HephaestianSettings
 	std::array<float, 3> m_LightWorldPosition{ 20.0f, 40.0f, 15.0f };
 	std::array<float, 3> m_LightColour{ 1.0f, 1.0f, 1.0f };			// RGB, 0 to 1
 
+	// Audio. A scene's "audioVolume" overrides the volume while it's loaded; mute and focus muting are the player's alone.
+	float m_AudioVolume{ 1.0f };					// 0 to 1, everything
+	bool m_IsAudioMuted{ false };
+	bool m_ShouldMuteAudioWhenUnfocused{ true };	// Silent while the window is in the background or minimised (music keeps going)
+	// 3D sound for headphones: "auto" (on when Windows says headphones), "on" or "off". Text, so a typo can't break the whole file.
+	std::string m_AudioHrtfMode{ "auto" };
+
 	// The scene opened at startup, relative to the runtime assets folder ("--scene <path>" on the command line wins)
 	std::string m_StartupSceneRelativePath{ "Scenes/Main.scene.json" };
 
@@ -57,6 +64,10 @@ struct glz::meta<Hephaestian::HephaestianSettings>
 		"backgroundClearColour", &T::m_BackgroundClearColour,
 		"lightPosition", &T::m_LightWorldPosition,
 		"lightColour", &T::m_LightColour,
+		"audioVolume", &T::m_AudioVolume,
+		"audioMuted", &T::m_IsAudioMuted,
+		"muteAudioWhenUnfocused", &T::m_ShouldMuteAudioWhenUnfocused,
+		"audioHrtf", &T::m_AudioHrtfMode,
 		"startupScene", &T::m_StartupSceneRelativePath
 	);
 };

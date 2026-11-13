@@ -65,6 +65,7 @@ void HephaestianSettingsWidget::drawSettingsWindow()
 		ImGui::PushItemWidth(c_ControlWidthInPixels);	// Fixed: auto-resizing and window-relative widths would feed each other
 		drawSceneSection();
 		drawEnvironmentSection();
+		drawAudioSection();
 		drawRendererStatisticsSection();
 		ImGui::PopItemWidth();
 	}
@@ -177,6 +178,77 @@ void HephaestianSettingsWidget::drawEnvironmentSection()
 	ImGui::SeparatorText("Light");
 	drawEnvironmentControl("Light position", EnvironmentControlKind::PositionDrag, SceneOverrides.m_LightWorldPosition, CurrentSettings.m_LightWorldPosition, &HephaestianSettings::m_LightWorldPosition);
 	drawEnvironmentControl("Light colour", EnvironmentControlKind::ColourPicker, SceneOverrides.m_LightColour, CurrentSettings.m_LightColour, &HephaestianSettings::m_LightColour);
+}
+
+void HephaestianSettingsWidget::drawAudioSection()
+{
+	ImGui::SeparatorText("Audio");
+	const HephaestianSettings& CurrentSettings = m_SettingsManager.getCurrentSettings();
+
+	// - Volume: like the environment, edited in the scene when the scene overrides it (kept on disk by "Save scene")
+	std::optional<float>& SceneVolumeOverride = m_Scene.getEnvironmentOverrides().m_AudioVolume;
+	const bool IsSceneOverriding = SceneVolumeOverride.has_value();
+	const std::string VolumeLabel = std::string("Volume") + (IsSceneOverriding ? c_SceneOverrideLabelSuffix : "");
+	float EditedVolumeInPercent = (IsSceneOverriding ? SceneVolumeOverride.value() : CurrentSettings.m_AudioVolume) * 100.0f;
+	if (ImGui::SliderFloat(VolumeLabel.c_str(), &EditedVolumeInPercent, 0.0f, 100.0f, "%.0f%%"))
+	{
+		const float EditedVolume = std::clamp(EditedVolumeInPercent / 100.0f, 0.0f, 1.0f);
+		if (IsSceneOverriding)
+		{
+			SceneVolumeOverride = EditedVolume;
+		}
+		else
+		{
+			// Applied live while dragging, written to the file once released
+			m_SettingsManager.setAutomaticallySaveRuntimeChanges(false);
+			m_SettingsManager.modifySettings([EditedVolume](HephaestianSettings& Settings) { Settings.m_AudioVolume = EditedVolume; });
+			m_SettingsManager.setAutomaticallySaveRuntimeChanges(true);
+			m_HasUnsavedContinuousEdit = true;
+		}
+	}
+
+	// - Mute, and muting while the window is in the background: the player's own choices, always engine settings
+	bool IsAudioMuted = CurrentSettings.m_IsAudioMuted;
+	if (ImGui::Checkbox("Mute", &IsAudioMuted))
+	{
+		m_SettingsManager.modifySettings([IsAudioMuted](HephaestianSettings& Settings) { Settings.m_IsAudioMuted = IsAudioMuted; });
+	}
+	ImGui::SameLine();
+	bool ShouldMuteAudioWhenUnfocused = CurrentSettings.m_ShouldMuteAudioWhenUnfocused;
+	if (ImGui::Checkbox("Mute when unfocused or minimised", &ShouldMuteAudioWhenUnfocused))
+	{
+		m_SettingsManager.modifySettings([ShouldMuteAudioWhenUnfocused](HephaestianSettings& Settings) { Settings.m_ShouldMuteAudioWhenUnfocused = ShouldMuteAudioWhenUnfocused; });
+	}
+
+	// - HRTF: also the player's (it's about their headphones), switched live
+	constexpr std::array<Audio::HrtfMode, 3> c_HrtfModeChoices{ Audio::HrtfMode::Automatic, Audio::HrtfMode::On, Audio::HrtfMode::Off };
+	constexpr std::array<const char*, 3> c_HrtfModeChoiceLabels{ "Auto (on when Windows reports headphones)", "On", "Off" };
+	const Audio::HrtfMode CurrentHrtfMode = Audio::parseHrtfModeName(CurrentSettings.m_AudioHrtfMode).value_or(Audio::HrtfMode::Automatic);
+	int SelectedHrtfModeIndex = static_cast<int>(std::ranges::find(c_HrtfModeChoices, CurrentHrtfMode) - c_HrtfModeChoices.begin());
+	if (ImGui::Combo("HRTF (3D for headphones)", &SelectedHrtfModeIndex, c_HrtfModeChoiceLabels.data(), static_cast<int>(c_HrtfModeChoiceLabels.size())))
+	{
+		const std::string SelectedHrtfModeName{ Audio::getHrtfModeName(c_HrtfModeChoices[static_cast<std::size_t>(SelectedHrtfModeIndex)]) };
+		m_SettingsManager.modifySettings([SelectedHrtfModeName](HephaestianSettings& Settings) { Settings.m_AudioHrtfMode = SelectedHrtfModeName; });
+	}
+	ImGui::SetItemTooltip("Makes sounds come from above, below and behind through headphones (wrong on speakers).\n"
+		"Some sound cards switch to headphones themselves while Windows still reports speakers: pick On for those.\n"
+		"Turn off the card's own virtual surround (e.g. SBX Surround) while it's on, or the sound is processed twice.");
+
+	// - What it's playing through
+	if (const Audio::AudioEngine* AudioEngine = m_Scene.getAudioEngine(); AudioEngine != nullptr)
+	{
+		const Audio::AudioStatistics Statistics = AudioEngine->getStatistics();
+		if (!Statistics.m_IsDeviceOpen)
+		{
+			ImGui::TextDisabled("No audio device: running silent");
+			return;
+		}
+		ImGui::TextDisabled("%s", Statistics.m_DeviceName.c_str());
+		const std::string HrtfStatusLine = "HRTF: " + Statistics.m_HrtfStatusDescription + (Statistics.m_HrtfName.empty() ? "" : " (" + Statistics.m_HrtfName + ")");
+		ImGui::TextDisabled("%s", HrtfStatusLine.c_str());
+		ImGui::TextDisabled("Voices: %u / %u (%u streaming)   Underruns: %llu   Cut short: %llu", Statistics.m_VoicesInUse, Statistics.m_VoiceCapacity,
+			Statistics.m_StreamingVoices, static_cast<unsigned long long>(Statistics.m_StreamUnderrunCount), static_cast<unsigned long long>(Statistics.m_StolenVoiceCount));
+	}
 }
 
 void HephaestianSettingsWidget::drawRendererStatisticsSection()

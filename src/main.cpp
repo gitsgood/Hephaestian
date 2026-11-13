@@ -125,10 +125,15 @@ auto main(int ArgumentCount, char** Arguments) -> int
 	// ImGui AFTER the InputManager: it chains onto the GLFW callbacks that are already installed, so both keep getting input
 	renderer.initialiseImGui(window.load().get());
 
+	// --- AUDIO --- (declared before the asset library and the scene, so it outlives every sound and source using it)
+	// Started with the saved HRTF choice, so the output isn't rebuilt on the first frame (an unknown name is warned about by the scene)
+	Audio::AudioEngine GameAudioEngine(Audio::parseHrtfModeName(SettingsManager.getCurrentSettings().m_AudioHrtfMode).value_or(Audio::HrtfMode::Automatic));
+
 	// --- SCENE ---
-	// Every model, texture and primitive is loaded once and shared by whichever scenes use it
-	Assets::AssetLibrary AssetLibrary(renderer);
+	// Every model, texture, primitive, sprite sheet and sound is loaded once and shared by whichever scenes use it
+	Assets::AssetLibrary AssetLibrary(renderer, GameAudioEngine);
 	Scene GameScene;
+	GameScene.setAudioEngine(GameAudioEngine);
 	const std::filesystem::path StartupSceneFilePath = Vulkanised::Utilities::File::getRuntimeAssetsDirectory()
 		/ StartupSceneFromCommandLine.value_or(SettingsManager.getCurrentSettings().m_StartupSceneRelativePath);
 	if (!GameScene.loadFromJsonFile(StartupSceneFilePath, AssetLibrary))
@@ -201,8 +206,22 @@ auto main(int ArgumentCount, char** Arguments) -> int
 			ImGuiInputOutput.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
 		}
 
+		// TEMPORARY (one-shot test, to be removed once checked): U plays ugotthat.mp3 as a one-shot, not tied to any entity
+		if (Input.wasKeyPressedThisFrame(GLFW_KEY_U) && !ImGuiInputOutput.WantCaptureKeyboard)
+		{
+			if (const std::shared_ptr<const Audio::SoundAsset> OneShotTestSound = AssetLibrary.getOrLoadSound("Audio/ugotthat.mp3"))
+			{
+				GameAudioEngine.playOneShot(OneShotTestSound, {});
+			}
+		}
+
 		// 3. ECS SYSTEMS (movement, spinning, transform hierarchy)
 		GameScene.updateSimulation(Input, DeltaTimeInSeconds);
+
+		// 3b. AUDIO: sources follow their entities, the listener its entity or the camera. "Active" = focused and not minimised.
+		GLFWwindow* const RawWindow = window.load().get();
+		const bool IsWindowActive = glfwGetWindowAttrib(RawWindow, GLFW_FOCUSED) == GLFW_TRUE && glfwGetWindowAttrib(RawWindow, GLFW_ICONIFIED) == GLFW_FALSE;
+		GameScene.updateAudio(SettingsManager.getCurrentSettings(), IsWindowActive);
 
 		// 4. ENVIRONMENT (the scene's clear colour/light where it sets them, the engine settings otherwise), then
 		//    BUILD RENDER PACKET + SUBMIT TO RENDERER (active camera, then one instance per submesh of every model, then the UI on top)

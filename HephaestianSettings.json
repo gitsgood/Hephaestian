@@ -16,5 +16,9 @@
       1,
       1
    ],
+   "audioVolume": 1.0,
+   "audioMuted": false,
+   "muteAudioWhenUnfocused": true,
+   "audioHrtf": "auto",
    "startupScene": "Scenes/Main.scene.json"
 }

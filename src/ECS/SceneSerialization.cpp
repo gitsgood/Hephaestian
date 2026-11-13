@@ -55,6 +55,19 @@ namespace
 		return std::nullopt;
 	}
 
+	// Distance falloffs as scene files spell them
+	[[nodiscard]] std::optional<Audio::DistanceFalloff> parseDistanceFalloffName(std::string_view FalloffName) noexcept
+	{
+		if (FalloffName == "inverse") { return Audio::DistanceFalloff::Inverse; }
+		if (FalloffName == "linear") { return Audio::DistanceFalloff::Linear; }
+		return std::nullopt;
+	}
+
+	[[nodiscard]] std::string_view getDistanceFalloffName(Audio::DistanceFalloff Falloff) noexcept
+	{
+		return Falloff == Audio::DistanceFalloff::Linear ? "linear" : "inverse";
+	}
+
 	[[nodiscard]] std::string_view getSpriteBillboardModeName(Components::SpriteBillboardMode BillboardMode) noexcept
 	{
 		for (const auto& [CurrentName, CurrentMode] : c_SpriteBillboardModeNames)
@@ -90,7 +103,7 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 	clear();
 	m_LoadedSceneFilePath = SceneFilePath;
 	m_SceneAssetTable = LoadedSceneFile.m_Assets;
-	m_EnvironmentOverrides = { LoadedSceneFile.m_ClearColour, LoadedSceneFile.m_LightWorldPosition, LoadedSceneFile.m_LightColour };
+	m_EnvironmentOverrides = { LoadedSceneFile.m_ClearColour, LoadedSceneFile.m_LightWorldPosition, LoadedSceneFile.m_LightColour, LoadedSceneFile.m_AudioVolume };
 
 	// 1. ASSETS: load (or reuse) everything in the asset table once, before any entity needs it
 	std::unordered_map<std::string, std::uint32_t> ModelIdentifiersByAssetName;
@@ -127,6 +140,18 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 		else
 		{
 			LOGW("Scene {}: sprite sheet '{}' ({}) couldn't be loaded, sprites using it won't be drawn.", SceneFilePath.filename().string(), SpriteSheetAssetName, SpriteSheetRelativePath);
+		}
+	}
+	std::unordered_map<std::string, std::shared_ptr<const Audio::SoundAsset>> SoundsByAssetName;
+	for (const auto& [SoundAssetName, SoundRelativePath] : m_SceneAssetTable.m_SoundPathsByName)
+	{
+		if (std::shared_ptr<const Audio::SoundAsset> LoadedSound = AssetLibraryToLoadFrom.getOrLoadSound(SoundRelativePath))
+		{
+			SoundsByAssetName.emplace(SoundAssetName, std::move(LoadedSound));
+		}
+		else
+		{
+			LOGW("Scene {}: sound '{}' ({}) couldn't be loaded, sources using it stay silent.", SceneFilePath.filename().string(), SoundAssetName, SoundRelativePath);
 		}
 	}
 
@@ -277,6 +302,48 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 		{
 			LOGW("Scene {}: entity '{}' has a spriteAnimation but no sprite to play it on.", SceneFilePath.filename().string(), SceneIdentifier);
 		}
+
+		// Audio source, playing a sound from the asset table (started by the audio system once the scene runs)
+		if (EntityDescription.m_Audio.has_value())
+		{
+			const SceneFile::SceneFileAudioBlock& AudioDescription = EntityDescription.m_Audio.value();
+			SerializationRecord.m_SoundAssetName = AudioDescription.m_SoundAssetName;	// Kept for saving, even if it didn't load
+
+			Components::AudioSourceComponent NewSource{};
+			if (const auto FoundSound = SoundsByAssetName.find(AudioDescription.m_SoundAssetName); FoundSound != SoundsByAssetName.end())
+			{
+				NewSource.m_Sound = FoundSound->second;
+			}
+			else if (!m_SceneAssetTable.m_SoundPathsByName.contains(AudioDescription.m_SoundAssetName))
+			{
+				LOGW("Scene {}: entity '{}' plays sound '{}', which isn't in the asset table.", SceneFilePath.filename().string(), SceneIdentifier, AudioDescription.m_SoundAssetName);
+			}
+			NewSource.m_Volume = AudioDescription.m_Volume;
+			NewSource.m_Pitch = AudioDescription.m_Pitch;
+			NewSource.m_ShouldLoop = AudioDescription.m_ShouldLoop;
+			NewSource.m_ShouldPlayOnStart = AudioDescription.m_ShouldPlayOnStart;
+			NewSource.m_IsSpatial = AudioDescription.m_IsSpatial;
+			NewSource.m_MinimumDistance = AudioDescription.m_MinimumDistance;
+			NewSource.m_MaximumDistance = AudioDescription.m_MaximumDistance;
+			NewSource.m_Rolloff = AudioDescription.m_Rolloff;
+			if (const std::optional<Audio::DistanceFalloff> Falloff = parseDistanceFalloffName(AudioDescription.m_FalloffName))
+			{
+				NewSource.m_Falloff = Falloff.value();
+			}
+			else
+			{
+				LOGW("Scene {}: entity '{}' has an unknown falloff '{}' (inverse or linear), using inverse.", SceneFilePath.filename().string(), SceneIdentifier, AudioDescription.m_FalloffName);
+			}
+			m_Registry.emplace<Components::AudioSourceComponent>(NewEntity, std::move(NewSource));
+		}
+		if (EntityDescription.m_AudioListener.has_value())
+		{
+			m_Registry.emplace<Components::AudioListenerComponent>(NewEntity);
+		}
+	}
+	if (m_Registry.view<Components::AudioListenerComponent>().size() > 1)
+	{
+		LOGW("Scene {}: more than one entity has an audioListener, only the first is listened through.", SceneFilePath.filename().string());
 	}
 
 	// 3. PARENTS, now that every entity exists
@@ -325,12 +392,12 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 		}
 	}
 
-	LOG("Loaded scene {}: {} entities, {} models, {} textures, {} sprite sheets", SceneFilePath.filename().string(), EntitiesBySceneIdentifier.size(),
-		ModelIdentifiersByAssetName.size(), TextureIdentifiersByAssetName.size(), SpriteSheetsByAssetName.size());
+	LOG("Loaded scene {}: {} entities, {} models, {} textures, {} sprite sheets, {} sounds", SceneFilePath.filename().string(), EntitiesBySceneIdentifier.size(),
+		ModelIdentifiersByAssetName.size(), TextureIdentifiersByAssetName.size(), SpriteSheetsByAssetName.size(), SoundsByAssetName.size());
 
 	// 4. UNLOAD WHAT THE PREVIOUS SCENE LEFT BEHIND, now that everything this one needs is loaded (so assets both use were
 	//    simply reused). Whatever is in this scene's asset table stays, even if no entity uses it yet: game code may spawn
-	//    some later. (SpriteSheetsByAssetName still holds this scene's sheets, which is what keeps them.)
+	//    some later. (SpriteSheetsByAssetName and SoundsByAssetName still hold this scene's sheets and sounds, which keeps them.)
 	std::vector<std::uint32_t> TextureIdentifiersStillInUse;
 	TextureIdentifiersStillInUse.reserve(TextureIdentifiersByAssetName.size());
 	for (const auto& [TextureAssetName, TextureIdentifier] : TextureIdentifiersByAssetName)
@@ -348,6 +415,7 @@ bool Scene::saveToJsonFile(const std::filesystem::path& SceneFilePath) const
 	SceneFileToWrite.m_ClearColour = m_EnvironmentOverrides.m_ClearColour;
 	SceneFileToWrite.m_LightWorldPosition = m_EnvironmentOverrides.m_LightWorldPosition;
 	SceneFileToWrite.m_LightColour = m_EnvironmentOverrides.m_LightColour;
+	SceneFileToWrite.m_AudioVolume = m_EnvironmentOverrides.m_AudioVolume;
 
 	// Entities in creation order (lowest entity index first), which for a loaded scene is the file's own order
 	std::vector<entt::entity> EntitiesToSave;
@@ -458,6 +526,34 @@ bool Scene::saveToJsonFile(const std::filesystem::path& SceneFilePath) const
 			{
 				LOGW("Saving scene: entity '{}' has a sprite whose sheet wasn't loaded from a scene file, so it's saved without it.", EntityDescription.m_SceneIdentifier);
 			}
+		}
+
+		// Audio source: also written back by the sound's NAME in the asset table
+		if (const auto* Source = m_Registry.try_get<Components::AudioSourceComponent>(CurrentEntity))
+		{
+			if (SerializationRecord != nullptr && !SerializationRecord->m_SoundAssetName.empty())
+			{
+				SceneFile::SceneFileAudioBlock AudioDescription{};
+				AudioDescription.m_SoundAssetName = SerializationRecord->m_SoundAssetName;
+				AudioDescription.m_Volume = roundForSceneFile(Source->m_Volume);
+				AudioDescription.m_Pitch = roundForSceneFile(Source->m_Pitch);
+				AudioDescription.m_ShouldLoop = Source->m_ShouldLoop;
+				AudioDescription.m_ShouldPlayOnStart = Source->m_ShouldPlayOnStart;
+				AudioDescription.m_IsSpatial = Source->m_IsSpatial;
+				AudioDescription.m_MinimumDistance = roundForSceneFile(Source->m_MinimumDistance);
+				AudioDescription.m_MaximumDistance = roundForSceneFile(Source->m_MaximumDistance);
+				AudioDescription.m_Rolloff = roundForSceneFile(Source->m_Rolloff);
+				AudioDescription.m_FalloffName = std::string(getDistanceFalloffName(Source->m_Falloff));
+				EntityDescription.m_Audio = AudioDescription;
+			}
+			else
+			{
+				LOGW("Saving scene: entity '{}' has an audio source whose sound wasn't loaded from a scene file, so it's saved without it.", EntityDescription.m_SceneIdentifier);
+			}
+		}
+		if (m_Registry.all_of<Components::AudioListenerComponent>(CurrentEntity))
+		{
+			EntityDescription.m_AudioListener = SceneFile::SceneFileAudioListenerBlock{};
 		}
 
 		if (const auto* Camera = m_Registry.try_get<Components::CameraComponent>(CurrentEntity))

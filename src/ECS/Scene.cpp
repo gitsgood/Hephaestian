@@ -10,6 +10,8 @@
 #include "Hephaestian/ECS/Systems/CameraSystem.h"
 #include "Hephaestian/ECS/Systems/RenderSystem.h"
 #include "Hephaestian/ECS/Systems/SpriteSystems.h"
+#include "Hephaestian/ECS/Systems/AudioSystems.h"
+#include "Hephaestian/Settings/HephaestianSettings.h"
 
 namespace Hephaestian
 {
@@ -132,6 +134,49 @@ void Scene::updateSimulation(const InputManager& Input, float DeltaTimeInSeconds
 
 	++m_CurrentSimulationFrameNumber;
 	Systems::updateWorldTransformsFromHierarchy(m_Registry, m_CurrentSimulationFrameNumber);
+}
+
+void Scene::setAudioEngine(Audio::AudioEngine& AudioEngineToUse)
+{
+	if (m_AudioEngine == nullptr)
+	{
+		// A source's voice stops with it: destroyed entity, removed component, cleared scene (loading another one)
+		m_Registry.on_destroy<Components::AudioSourceComponent>().connect<&Scene::onAudioSourceDestroyed>(*this);
+	}
+	m_AudioEngine = &AudioEngineToUse;
+}
+
+void Scene::onAudioSourceDestroyed(entt::registry& Registry, entt::entity DestroyedEntity)
+{
+	if (m_AudioEngine != nullptr)
+	{
+		m_AudioEngine->stop(Registry.get<Components::AudioSourceComponent>(DestroyedEntity).m_Voice);
+	}
+}
+
+void Scene::updateAudio(const HephaestianSettings& EngineSettings, bool IsWindowActive)
+{
+	if (m_AudioEngine == nullptr)
+	{
+		return;
+	}
+
+	// Everything in between reaches OpenAL as one batch
+	// HRTF: engine-only (it's about the player's headphones, not the scene). Only a change reaches OpenAL.
+	const std::optional<Audio::HrtfMode> RequestedHrtfMode = Audio::parseHrtfModeName(EngineSettings.m_AudioHrtfMode);
+	if (!RequestedHrtfMode.has_value() && m_LastWarnedHrtfModeName != EngineSettings.m_AudioHrtfMode)
+	{
+		LOGW("Settings: unknown audioHrtf '{}' (\"auto\", \"on\" or \"off\"), using auto.", EngineSettings.m_AudioHrtfMode);
+		m_LastWarnedHrtfModeName = EngineSettings.m_AudioHrtfMode;
+	}
+	m_AudioEngine->setHrtfMode(RequestedHrtfMode.value_or(Audio::HrtfMode::Automatic));
+
+	m_AudioEngine->beginFrameUpdates();
+	const bool IsSilenced = EngineSettings.m_IsAudioMuted || (!IsWindowActive && EngineSettings.m_ShouldMuteAudioWhenUnfocused);
+	m_AudioEngine->setOutputGain(IsSilenced ? 0.0f : glm::clamp(m_EnvironmentOverrides.m_AudioVolume.value_or(EngineSettings.m_AudioVolume), 0.0f, 1.0f));
+	Systems::updateAudioListener(m_Registry, *m_AudioEngine, m_ActiveCameraEntity);
+	Systems::updateAudioSources(m_Registry, *m_AudioEngine);
+	m_AudioEngine->endFrameUpdates();
 }
 
 void Scene::renderToRenderer(Vulkanised::VulkanRenderer& Renderer)

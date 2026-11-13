@@ -18,18 +18,24 @@
 *	  "assets": {
 *	    "models":   { "Quarry": "Models/laz_mesh.obj" },		<- name: path relative to assets/
 *	    "textures": { "Logo": "resources/Hephaestos.png" },
-*	    "spriteSheets": { "Slime": "Sprites/Slime.spritesheet.json" }
+*	    "spriteSheets": { "Slime": "Sprites/Slime.spritesheet.json" },
+*	    "sounds": { "Theme": "Audio/Theme.mp3" }
 *	  },
 *	  "clearColour": [0.1, 0.1, 0.1],							<- optional: overrides HephaestianSettings while this scene is loaded
 *	  "lightPosition": [20, 40, 15],							<- optional, same
 *	  "lightColour": [1, 1, 1],									<- optional, same
+*	  "audioVolume": 0.8,										<- optional, same (0 to 1)
 *	  "entities": [
 *	    { "id": "Player", "position": [0, 1.7, 3], "freeFlyController": { "movementSpeed": 12 } },
 *	    { "id": "PlayerCamera", "parent": "Player", "camera": {} },
 *	    { "id": "Box", "primitive": "cube", "texture": "Logo", "rotationInDegrees": [0, 45, 0],
 *	      "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 } },
 *	    { "id": "Slime", "position": [2, 0, 0], "sprite": { "sheet": "Slime", "billboard": "faceCameraUpright" },
-*	      "spriteAnimation": { "clip": "hop" } }
+*	      "spriteAnimation": { "clip": "hop" } },
+*	    { "id": "Music", "audio": { "sound": "Theme", "loop": true } },					<- the same in both ears
+*	    { "id": "Radio", "position": [3, 1, 0], "audio": { "sound": "Theme", "spatial": true,	<- in the world
+*	      "minDistance": 2, "maxDistance": 25, "falloff": "linear" } },
+*	    { "id": "Ears", "parent": "Player", "audioListener": {} }							<- optional: the active camera otherwise
 *	  ],
 *	  "activeCamera": "PlayerCamera"
 *	}
@@ -44,6 +50,7 @@ struct SceneFileAssetTable
 	std::map<std::string, std::string> m_ModelPathsByName;		// Sorted by name, so saved files stay stable and diff nicely
 	std::map<std::string, std::string> m_TexturePathsByName;
 	std::map<std::string, std::string> m_SpriteSheetPathsByName;	// .spritesheet.json sidecars or Aseprite JSON exports
+	std::map<std::string, std::string> m_SoundPathsByName;		// .mp3, .wav, .flac or .ogg
 };
 
 struct SceneFileCameraBlock
@@ -87,6 +94,26 @@ struct SceneFileSpriteAnimationBlock
 	bool m_IsPlaying{ true };
 };
 
+// Plays a sound from the asset table on this entity (see AudioSourceComponent)
+struct SceneFileAudioBlock
+{
+	std::string m_SoundAssetName;
+	float m_Volume{ 1.0f };
+	float m_Pitch{ 1.0f };
+	bool m_ShouldLoop{ false };
+	bool m_ShouldPlayOnStart{ true };
+	bool m_IsSpatial{ false };					// true: placed at the entity, panned and faded with distance
+	float m_MinimumDistance{ 1.0f };
+	float m_MaximumDistance{ 50.0f };
+	float m_Rolloff{ 1.0f };
+	std::string m_FalloffName{ "inverse" };		// "inverse" (like real sound) or "linear" (silent at the maximum distance)
+};
+
+// Makes this entity the ears instead of the active camera. Nothing to set: "audioListener": {}
+struct SceneFileAudioListenerBlock
+{
+};
+
 struct SceneFileEntity
 {
 	std::string m_SceneIdentifier;								// Unique within the scene
@@ -108,6 +135,8 @@ struct SceneFileEntity
 	std::optional<SceneFileConstantRotationBlock> m_ConstantRotation;
 	std::optional<SceneFileSpriteBlock> m_Sprite;
 	std::optional<SceneFileSpriteAnimationBlock> m_SpriteAnimation;
+	std::optional<SceneFileAudioBlock> m_Audio;
+	std::optional<SceneFileAudioListenerBlock> m_AudioListener;
 };
 
 struct SceneFileContents
@@ -116,6 +145,7 @@ struct SceneFileContents
 	std::optional<std::array<float, 3>> m_ClearColour;
 	std::optional<std::array<float, 3>> m_LightWorldPosition;
 	std::optional<std::array<float, 3>> m_LightColour;
+	std::optional<float> m_AudioVolume;
 	std::vector<SceneFileEntity> m_Entities;
 	std::optional<std::string> m_ActiveCameraSceneIdentifier;
 };
@@ -127,7 +157,8 @@ template <>
 struct glz::meta<Hephaestian::SceneFile::SceneFileAssetTable>
 {
 	using T = Hephaestian::SceneFile::SceneFileAssetTable;
-	static constexpr auto value = glz::object("models", &T::m_ModelPathsByName, "textures", &T::m_TexturePathsByName, "spriteSheets", &T::m_SpriteSheetPathsByName);
+	static constexpr auto value = glz::object("models", &T::m_ModelPathsByName, "textures", &T::m_TexturePathsByName, "spriteSheets", &T::m_SpriteSheetPathsByName,
+		"sounds", &T::m_SoundPathsByName);
 };
 
 template <>
@@ -180,6 +211,29 @@ struct glz::meta<Hephaestian::SceneFile::SceneFileSpriteAnimationBlock>
 };
 
 template <>
+struct glz::meta<Hephaestian::SceneFile::SceneFileAudioBlock>
+{
+	using T = Hephaestian::SceneFile::SceneFileAudioBlock;
+	static constexpr auto value = glz::object(
+		"sound", &T::m_SoundAssetName,
+		"volume", &T::m_Volume,
+		"pitch", &T::m_Pitch,
+		"loop", &T::m_ShouldLoop,
+		"playOnStart", &T::m_ShouldPlayOnStart,
+		"spatial", &T::m_IsSpatial,
+		"minDistance", &T::m_MinimumDistance,
+		"maxDistance", &T::m_MaximumDistance,
+		"rolloff", &T::m_Rolloff,
+		"falloff", &T::m_FalloffName);
+};
+
+template <>
+struct glz::meta<Hephaestian::SceneFile::SceneFileAudioListenerBlock>
+{
+	static constexpr auto value = glz::object();
+};
+
+template <>
 struct glz::meta<Hephaestian::SceneFile::SceneFileEntity>
 {
 	using T = Hephaestian::SceneFile::SceneFileEntity;
@@ -198,7 +252,9 @@ struct glz::meta<Hephaestian::SceneFile::SceneFileEntity>
 		"freeFlyController", &T::m_FreeFlyController,
 		"constantRotation", &T::m_ConstantRotation,
 		"sprite", &T::m_Sprite,
-		"spriteAnimation", &T::m_SpriteAnimation);
+		"spriteAnimation", &T::m_SpriteAnimation,
+		"audio", &T::m_Audio,
+		"audioListener", &T::m_AudioListener);
 };
 
 template <>
@@ -210,6 +266,7 @@ struct glz::meta<Hephaestian::SceneFile::SceneFileContents>
 		"clearColour", &T::m_ClearColour,
 		"lightPosition", &T::m_LightWorldPosition,
 		"lightColour", &T::m_LightColour,
+		"audioVolume", &T::m_AudioVolume,
 		"entities", &T::m_Entities,
 		"activeCamera", &T::m_ActiveCameraSceneIdentifier);
 };

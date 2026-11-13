@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -12,6 +13,7 @@
 
 #include <Vulkanised/VulkanRenderer.h>
 
+#include "Hephaestian/Audio/AudioEngine.h"
 #include "Hephaestian/ECS/SceneFile.h"
 #include "Hephaestian/Input/InputManager.h"
 
@@ -27,6 +29,7 @@ struct SceneEnvironmentOverrides
 	std::optional<std::array<float, 3>> m_ClearColour;
 	std::optional<std::array<float, 3>> m_LightWorldPosition;
 	std::optional<std::array<float, 3>> m_LightColour;
+	std::optional<float> m_AudioVolume;					// 0 to 1 (mute and focus muting stay the player's choice: engine only)
 };
 
 /*
@@ -35,6 +38,7 @@ struct SceneEnvironmentOverrides
 *
 * Per frame:
 *	Scene.updateSimulation(Input, DeltaTimeInSeconds);	// gameplay: input -> movement -> transform hierarchy
+*	Scene.updateAudio(Settings, IsWindowActive);		// sources follow their entities, listener, volume -> OpenAL
 *	Scene.renderToRenderer(Renderer);					// camera + render packet -> Vulkanised
 */
 class Scene
@@ -78,8 +82,16 @@ public:
 	[[nodiscard]] const SceneEnvironmentOverrides& getEnvironmentOverrides() const noexcept { return m_EnvironmentOverrides; }
 	void applyEnvironmentToRenderer(Vulkanised::VulkanRenderer& Renderer, const HephaestianSettings& EngineSettings) const;
 
+	// - Audio. Set once, before the first scene is loaded: audio sources need it (and stop when their entity is destroyed).
+	void setAudioEngine(Audio::AudioEngine& AudioEngineToUse);
+	[[nodiscard]] Audio::AudioEngine* getAudioEngine() const noexcept { return m_AudioEngine; }
+
 	// - Per frame
 	void updateSimulation(const InputManager& Input, float DeltaTimeInSeconds);
+	// After updateSimulation (sources follow their entity's world transform): starts and moves sources, puts the listener
+	// on its entity (or the active camera), and sets the output volume: the scene's audioVolume, else the engine setting;
+	// silent when muted, or when IsWindowActive is false and the settings ask to mute in the background.
+	void updateAudio(const HephaestianSettings& EngineSettings, bool IsWindowActive);
 	void renderToRenderer(Vulkanised::VulkanRenderer& Renderer);
 
 	[[nodiscard]] entt::registry& getRegistry() noexcept { return m_Registry; }
@@ -89,6 +101,7 @@ private:
 	entt::registry m_Registry;
 	entt::entity m_ActiveCameraEntity{ entt::null };
 	bool m_HasWarnedAboutMissingActiveCamera{ false };
+	std::string m_LastWarnedHrtfModeName;	// So a bad "audioHrtf" is warned about once, not every frame
 
 	// Starts at 0 and is incremented before each hierarchy pass, so the first pass is frame 1 and never matches the components' default of 0
 	std::uint64_t m_CurrentSimulationFrameNumber{ 0 };
@@ -100,6 +113,10 @@ private:
 	std::filesystem::path m_LoadedSceneFilePath;
 	SceneFile::SceneFileAssetTable m_SceneAssetTable;
 	SceneEnvironmentOverrides m_EnvironmentOverrides;
+
+	// Set once by setAudioEngine: sources need it to stop when their entity goes
+	Audio::AudioEngine* m_AudioEngine{ nullptr };
+	void onAudioSourceDestroyed(entt::registry& Registry, entt::entity DestroyedEntity);
 };
 
 }

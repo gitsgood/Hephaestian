@@ -17,6 +17,7 @@ namespace Hephaestian::UI
 *	  If the loaded scene overrides one of them, its control is redirected to the SCENE instead (and says so), and the
 *	  change is only kept on disk when "Save scene" is clicked.
 *	- one button per scene file found in assets/Scenes at startup, to load it, and "Save scene" for the loaded one
+*	- audio: volume (redirected to the scene when it overrides it, like the environment), mute, muting in the background
 *	- renderer statistics (frame times, draws, culling, GPU memory), collapsed by default
 */
 class HephaestianSettingsWidget
@@ -31,6 +32,7 @@ public:
 private:
 	void drawSceneSection();
 	void drawEnvironmentSection();
+	void drawAudioSection();
 	void drawRendererStatisticsSection();
 
 	HephaestianSettingsManager& m_SettingsManager;

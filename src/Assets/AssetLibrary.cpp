@@ -146,8 +146,9 @@ std::string_view getPrimitiveShapeName(PrimitiveShape Shape)
 	return ShapeIndex < c_PrimitiveShapeNames.size() ? c_PrimitiveShapeNames[ShapeIndex] : std::string_view{ "unknown" };
 }
 
-AssetLibrary::AssetLibrary(Vulkanised::VulkanRenderer& RendererToUploadInto)
+AssetLibrary::AssetLibrary(Vulkanised::VulkanRenderer& RendererToUploadInto, Audio::AudioEngine& AudioEngineToLoadInto)
 	: m_Renderer(RendererToUploadInto)
+	, m_AudioEngine(AudioEngineToLoadInto)
 	, m_ModelImporter(RendererToUploadInto)
 {
 }
@@ -320,11 +321,48 @@ void AssetLibrary::releaseAssetsUnusedByScene(std::span<const std::uint32_t> Tex
 		return true;
 	});
 
-	if (ReleasedSpriteSheetCount > 0 || ReleasedTextureCount > 0)
+	// Sounds: the same rule (a voice playing one holds it, so a sound still playing, a one-shot carried over from the
+	// previous scene say, is never freed under it)
+	std::size_t ReleasedSoundCount{ 0 };
+	std::erase_if(m_SoundsByAbsolutePath, [this, &ReleasedSoundCount](const auto& CachedSoundEntry)
 	{
-		LOG("Unloaded what the new scene doesn't use: {} sprite sheet(s) ({} page textures), {} texture(s). Their GPU memory goes within a couple of frames.",
-			ReleasedSpriteSheetCount, ReleasedPageCount, ReleasedTextureCount);
+		if (CachedSoundEntry.second.use_count() > 1)
+		{
+			return false;
+		}
+		m_AudioEngine.releaseSound(*CachedSoundEntry.second);
+		++ReleasedSoundCount;
+		return true;
+	});
+
+	if (ReleasedSpriteSheetCount > 0 || ReleasedTextureCount > 0 || ReleasedSoundCount > 0)
+	{
+		LOG("Unloaded what the new scene doesn't use: {} sprite sheet(s) ({} page textures), {} texture(s), {} sound(s). Their GPU memory goes within a couple of frames.",
+			ReleasedSpriteSheetCount, ReleasedPageCount, ReleasedTextureCount, ReleasedSoundCount);
 	}
+}
+
+std::shared_ptr<const Audio::SoundAsset> AssetLibrary::getOrLoadSound(const std::filesystem::path& SoundRelativePath)
+{
+	const std::filesystem::path AbsoluteSoundPath = convertToAbsoluteAssetPath(SoundRelativePath);
+	const std::string AbsoluteSoundPathAsText = AbsoluteSoundPath.generic_string();
+	if (const auto CachedSound = m_SoundsByAbsolutePath.find(AbsoluteSoundPathAsText); CachedSound != m_SoundsByAbsolutePath.end())
+	{
+		return CachedSound->second;
+	}
+
+	const auto LoadStartTime = std::chrono::steady_clock::now();
+	std::shared_ptr<Audio::SoundAsset> LoadedSound = m_AudioEngine.createSound(AbsoluteSoundPath);	// Logs its own problems
+	if (LoadedSound == nullptr)
+	{
+		return nullptr;
+	}
+	const double LoadTimeInMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - LoadStartTime).count();
+	LOG("Loaded sound {}: {} channel(s), {} Hz, {}{:.1f} s, {} ({:.0f} ms).", AbsoluteSoundPath.filename().string(), LoadedSound->m_ChannelCount,
+		LoadedSound->m_SampleRateInHertz, LoadedSound->m_IsStreamed ? "about " : "", LoadedSound->m_DurationInSeconds,
+		LoadedSound->m_IsStreamed ? "streamed while playing" : "decoded whole", LoadTimeInMilliseconds);
+	m_SoundsByAbsolutePath.emplace(AbsoluteSoundPathAsText, LoadedSound);
+	return LoadedSound;
 }
 
 }

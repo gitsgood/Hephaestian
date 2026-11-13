@@ -15,6 +15,7 @@
 
 #include "Hephaestian/Assets/ModelImporter.h"
 #include "Hephaestian/Assets/SpriteSheet.h"
+#include "Hephaestian/Audio/AudioEngine.h"
 
 namespace Hephaestian::Assets
 {
@@ -34,15 +35,14 @@ enum class PrimitiveShape : int
 
 /*
 * Every model, texture and primitive the engine has loaded, each loaded only ONCE no matter how many scenes (or how many
-* times one scene) ask for it. Created once and shared: Vulkanised can't free GPU memory yet, so reloading the same file
-* for every scene load would just keep eating it.
+* times one scene) ask for it. What a new scene no longer uses is let go when it loads (releaseAssetsUnusedByScene).
 *
 * Paths are relative to the runtime assets folder (<exe folder>/assets), e.g. "Models/Duck.glb" or "resources/Hephaestos.png".
 */
 class AssetLibrary
 {
 public:
-	explicit AssetLibrary(Vulkanised::VulkanRenderer& RendererToUploadInto);
+	AssetLibrary(Vulkanised::VulkanRenderer& RendererToUploadInto, Audio::AudioEngine& AudioEngineToLoadInto);
 
 	// std::nullopt (and logged) if the file couldn't be loaded
 	[[nodiscard]] std::optional<ImportedModel> getOrLoadModel(const std::filesystem::path& ModelRelativePath);
@@ -51,13 +51,17 @@ public:
 	// Built on first use, then shared. Untextured (white), so a texture override gives them their look.
 	[[nodiscard]] std::uint32_t getOrCreatePrimitiveModel(PrimitiveShape Shape);
 
+	// A sound file (.mp3, .wav, .flac, .ogg): decoded whole if it's short, streamed while playing if it's long (see
+	// AudioEngine). Shared by everything playing it. nullptr (and logged) if it couldn't be loaded.
+	[[nodiscard]] std::shared_ptr<const Audio::SoundAsset> getOrLoadSound(const std::filesystem::path& SoundRelativePath);
+
 	// A sprite sheet (sidecar .spritesheet.json or Aseprite JSON export, see SpriteSheet.h): its texture uploaded, frames and
 	// clips ready. Shared by every sprite using it. nullptr (and logged) if it couldn't be loaded.
 	[[nodiscard]] std::shared_ptr<const SpriteSheet> getOrLoadSpriteSheet(const std::filesystem::path& SpriteSheetRelativePath);
 
 	// SCENE SWITCHES (Scene::loadFromJsonFile calls this once the new scene is loaded, so assets both scenes use are never
 	// reloaded). Frees:
-	//	- every sprite sheet nothing holds anymore (only this library's cache does)
+	//	- every sprite sheet and sound nothing holds anymore (only this library's cache does: a playing sound is held by its voice)
 	//	- every texture from getOrLoadTexture that isn't in TextureIdentifiersStillInUse
 	// Models (and the textures they brought along) stay for now: their geometry can't be freed yet.
 	// Built for one scene at a time: a second scene sharing this library would lose the textures only it uses.
@@ -65,10 +69,12 @@ public:
 
 private:
 	Vulkanised::VulkanRenderer& m_Renderer;
+	Audio::AudioEngine& m_AudioEngine;
 	ModelImporter m_ModelImporter;	// Caches models by path itself
 	std::unordered_map<std::string, std::uint32_t> m_TextureIdentifiersByAbsolutePath;
 	std::array<std::optional<std::uint32_t>, static_cast<std::size_t>(PrimitiveShape::Count)> m_PrimitiveModelIdentifiers;
 	std::unordered_map<std::string, std::shared_ptr<const SpriteSheet>> m_SpriteSheetsByAbsolutePath;
+	std::unordered_map<std::string, std::shared_ptr<Audio::SoundAsset>> m_SoundsByAbsolutePath;
 };
 
 }

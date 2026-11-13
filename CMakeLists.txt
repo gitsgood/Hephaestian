@@ -28,6 +28,27 @@ set(FASTGLTF_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(FASTGLTF_ENABLE_DOCS OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/fastgltf SYSTEM)  # SYSTEM: its headers can't trip our warnings-as-errors
 
+# AUDIO
+# - OpenAL Soft 1.25.2 (github.com/kcat/openal-soft): mixing, 3D sound, HRTF, on its own thread. LGPL, which is why it
+#   stays a DLL (OpenAL32.dll / libopenal.so) next to the executable rather than being linked in.
+#   Only the library itself: no utilities, examples, tests or install rules.
+set(ALSOFT_UTILS OFF CACHE BOOL "" FORCE)
+set(ALSOFT_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ALSOFT_TESTS OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL_CONFIG OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL_HRTF_DATA OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL_AMBDEC_PRESETS OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ALSOFT_INSTALL_UTILS OFF CACHE BOOL "" FORCE)
+set(ALSOFT_UPDATE_BUILD_VERSION OFF CACHE BOOL "" FORCE)	# Don't ask git about OpenAL Soft's version: it isn't a git checkout here
+set(ALSOFT_ENABLE_MODULES OFF CACHE BOOL "" FORCE)		# C++20 modules are optional for it, and only make the build pickier
+set(ALSOFT_EAX OFF CACHE BOOL "" FORCE)					# Legacy Creative EAX effects: not needed
+set(LIBTYPE SHARED CACHE STRING "" FORCE)
+add_subdirectory(external/openal-soft SYSTEM)
+# - Decoders (MP3, WAV, FLAC, Ogg Vorbis): OpenAL only plays raw samples
+add_subdirectory(external/audio_decoders)
+
 # Set source files...
 set(SOURCES
     src/main.cpp
@@ -42,6 +63,9 @@ set(SOURCES
     include/Hephaestian/ECS/Systems/CameraSystem.h              src/ECS/Systems/CameraSystem.cpp
     include/Hephaestian/ECS/Systems/RenderSystem.h              src/ECS/Systems/RenderSystem.cpp
     include/Hephaestian/ECS/Systems/SpriteSystems.h             src/ECS/Systems/SpriteSystems.cpp
+    include/Hephaestian/ECS/Systems/AudioSystems.h              src/ECS/Systems/AudioSystems.cpp
+    include/Hephaestian/Audio/AudioEngine.h                      src/Audio/AudioEngine.cpp
+    include/Hephaestian/Audio/AudioDecoder.h                     src/Audio/AudioDecoder.cpp
     include/Hephaestian/Assets/ModelImporter.h                  src/Assets/ModelImporter.cpp
     include/Hephaestian/Settings/HephaestianSettings.h          src/Settings/HephaestianSettings.cpp
     include/Hephaestian/Settings/HephaestianSettingsManager.h   src/Settings/HephaestianSettingsManager.cpp
@@ -115,6 +139,14 @@ set(LIB_LIST
     EnTT::EnTT # The ECS
     fastgltf::fastgltf # glTF/GLB importing
     ufbx::ufbx # OBJ/FBX importing
+    OpenAL::OpenAL # Audio (a DLL, see above)
+    audio_decoders # MP3/WAV/FLAC/Ogg decoding
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE ${LIB_LIST})
+
+# OpenAL Soft is a DLL: it has to sit next to the executable, like the assets do
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:OpenAL>" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    COMMENT "Copying OpenAL Soft next to the executable"
+)

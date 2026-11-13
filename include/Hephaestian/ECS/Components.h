@@ -14,6 +14,8 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "Hephaestian/Audio/AudioEngine.h"
+
 /*
 * Every component is plain data. All the logic lives in the systems (see ECS/Systems/).
 *
@@ -77,6 +79,7 @@ struct SceneSerializationComponent
 	std::string m_PrimitiveShapeName;	// "quad", "cube", "sphere", or empty
 	std::string m_TextureAssetName;		// Texture override's name in the asset table, or empty
 	std::string m_SpriteSheetAssetName;	// Sprite sheet's name in the asset table, or empty
+	std::string m_SoundAssetName;		// Audio source's sound name in the asset table, or empty
 };
 
 // Turns the entity into something that can be looked through. The entity's world transform IS the eye.
@@ -151,6 +154,33 @@ struct SpriteAnimatorComponent
 	float m_PlaybackSpeed{ 1.0f };					// 2 = twice as fast, negative = backwards
 	bool m_IsPlaying{ true };
 	bool m_HasFinished{ false };					// A "once" clip reached its last frame
+};
+
+// Plays a sound from this entity: music (not spatial: the same in both ears, wherever you stand), or a sound placed in
+// the world at the entity's position (spatial: panned and faded with distance, it follows the entity as it moves).
+// Started by the audio system when m_ShouldPlayOnStart, or by Systems::playAudioSource. Destroying the entity stops it.
+struct AudioSourceComponent
+{
+	std::shared_ptr<const Audio::SoundAsset> m_Sound;	// From AssetLibrary::getOrLoadSound
+	float m_Volume{ 1.0f };
+	float m_Pitch{ 1.0f };
+	bool m_ShouldLoop{ false };
+	bool m_ShouldPlayOnStart{ true };
+	bool m_IsSpatial{ false };
+	float m_MinimumDistance{ 1.0f };					// Spatial only: full volume up to here
+	float m_MaximumDistance{ 50.0f };					// Spatial only: the far end of the fade (silent from here with linear falloff)
+	float m_Rolloff{ 1.0f };
+	Audio::DistanceFalloff m_Falloff{ Audio::DistanceFalloff::Inverse };
+
+	// Run time
+	Audio::VoiceHandle m_Voice;							// While it plays
+	bool m_HasBeenStarted{ false };						// Play on start only happens once
+};
+
+// The ears. Without one in the scene, the listener follows the active camera; with one, it's this entity
+// (its world position, and its forward (-Z) and up (+Y) directions).
+struct AudioListenerComponent
+{
 };
 
 }

@@ -1,0 +1,33 @@
+{
+   "assets": {
+      "spriteSheets": {
+         "LaFemme": "Sprites/LaFemme"
+      },
+      "sounds": {
+         "DivineCreature": "Audio/DivineCreature.mp3"
+      }
+   },
+   "clearColour": [0, 0, 0],
+   "entities": [
+      {
+         "id": "Player",
+         "position": [0, 1.6, 7],
+         "freeFlyController": {}
+      },
+      {
+         "id": "PlayerCamera",
+         "parent": "Player",
+         "camera": {}
+      },
+      {
+         "id": "LaFemme",
+         "name": "La Femme (sings in 3D: walk away and she fades out)",
+         "position": [0, 0, -2],
+         "scale": [1.6, 1.6, 1.6],
+         "sprite": { "sheet": "LaFemme", "billboard": "faceCameraUpright" },
+         "spriteAnimation": { "clip": "play" },
+         "audio": { "sound": "DivineCreature", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear" }
+      }
+   ],
+   "activeCamera": "PlayerCamera"
+}
