@@ -1,0 +1,10 @@
+{
+   "imageFolder": ".",
+   "grid": { "columns": 8, "rows": 8 },
+   "pixelsPerUnit": 72,
+   "filtering": "smooth",
+   "blending": "additive",
+   "clips": [
+      { "name": "play", "framesPerSecond": 20 }
+   ]
+}

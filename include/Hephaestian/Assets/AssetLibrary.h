@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -12,6 +13,7 @@
 #include <Vulkanised/VulkanRenderer.h>
 
 #include "Hephaestian/Assets/ModelImporter.h"
+#include "Hephaestian/Assets/SpriteSheet.h"
 
 namespace Hephaestian::Assets
 {
@@ -22,6 +24,7 @@ enum class PrimitiveShape : int
 	Quad = 0,	// 1 x 1 m, lying flat on the XZ plane, facing up (+y): a floor tile
 	Cube,		// 1 x 1 x 1 m, centred on the origin
 	Sphere,		// 1 m across (radius 0.5), centred on the origin
+	Sprite,		// 1 x 1 m, standing up in the XY plane, facing +z (towards an unrotated camera): what every sprite draws with
 	Count
 };
 
@@ -47,11 +50,16 @@ public:
 	// Built on first use, then shared. Untextured (white), so a texture override gives them their look.
 	[[nodiscard]] std::uint32_t getOrCreatePrimitiveModel(PrimitiveShape Shape);
 
+	// A sprite sheet (sidecar .spritesheet.json or Aseprite JSON export, see SpriteSheet.h): its texture uploaded, frames and
+	// clips ready. Shared by every sprite using it. nullptr (and logged) if it couldn't be loaded.
+	[[nodiscard]] std::shared_ptr<const SpriteSheet> getOrLoadSpriteSheet(const std::filesystem::path& SpriteSheetRelativePath);
+
 private:
 	Vulkanised::VulkanRenderer& m_Renderer;
 	ModelImporter m_ModelImporter;	// Caches models by path itself
 	std::unordered_map<std::string, std::uint32_t> m_TextureIdentifiersByAbsolutePath;
 	std::array<std::optional<std::uint32_t>, static_cast<std::size_t>(PrimitiveShape::Count)> m_PrimitiveModelIdentifiers;
+	std::unordered_map<std::string, std::shared_ptr<const SpriteSheet>> m_SpriteSheetsByAbsolutePath;
 };
 
 }

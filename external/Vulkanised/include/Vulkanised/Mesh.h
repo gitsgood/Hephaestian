@@ -27,6 +27,17 @@ namespace Vulkanised
         float m_BoundingSphereRadius{ 0.0f };
     };
 
+    // How an instance is drawn (bits of RenderInstance::m_Flags). Same values as in shader.vert / shader.frag.
+    namespace RenderInstanceFlags
+    {
+        inline constexpr uint32_t c_AlphaCutout{ 1u << 0 };         // Pixels under 50% alpha are discarded (sprites, foliage). Drawn two-sided.
+        inline constexpr uint32_t c_FaceCamera{ 1u << 1 };          // Billboard: the mesh's x/y plane always faces the camera
+        inline constexpr uint32_t c_FaceCameraUpright{ 1u << 2 };   // Billboard that only turns around the world's vertical axis
+        inline constexpr uint32_t c_Unlit{ 1u << 3 };               // Texture x tint, no lighting
+        inline constexpr uint32_t c_Additive{ 1u << 4 };            // Added onto what's behind (glows, fire, light on black). Wins over c_AlphaCutout.
+                                                                    // Hidden by what's in front, hides nothing itself, needs no sorting. Drawn two-sided.
+    }
+
     // The Payload your ECS systems will build and pass to the renderer.
     // Everything after the transform is optional: {mesh, texture, transform} still draws the whole texture, untinted.
     struct RenderInstance {
@@ -35,6 +46,8 @@ namespace Vulkanised
         glm::mat4 transform;
         glm::vec4 m_TextureCoordinateRect{ 0.0f, 0.0f, 1.0f, 1.0f };   // (offset u, offset v, scale u, scale v): a sprite sheet frame, or the whole texture
         glm::vec4 m_Tint{ 1.0f };                                       // Multiplies the texture colour (linear RGB, alpha unused for now)
+        uint32_t m_Flags{ 0 };                                          // RenderInstanceFlags, combined with |
+        glm::vec2 m_PivotOffset{ 0.0f };                                // Added to every vertex's x/y first (sprites use it to move their pivot)
     };
 
     // MULTI-MESH MODELS

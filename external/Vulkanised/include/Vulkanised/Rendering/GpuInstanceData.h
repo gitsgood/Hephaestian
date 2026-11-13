@@ -16,7 +16,8 @@ struct GpuInstanceData
 	glm::vec4 m_TextureCoordinateRect{ 0.0f, 0.0f, 1.0f, 1.0f };	// uv = vertexUv * zw + xy
 	glm::vec4 m_Tint{ 1.0f };
 	uint32_t m_TextureIndex{ 0 };									// Slot in the bindless texture array
-	uint32_t m_PaddingToSixteenBytes[3]{};
+	uint32_t m_Flags{ 0 };											// RenderInstanceFlags
+	glm::vec2 m_PivotOffset{ 0.0f };
 };
 static_assert(sizeof(GpuInstanceData) == 112, "GpuInstanceData must match the shader's std430 InstanceData struct");
 

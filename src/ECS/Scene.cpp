@@ -9,6 +9,7 @@
 #include "Hephaestian/ECS/Systems/MovementSystems.h"
 #include "Hephaestian/ECS/Systems/CameraSystem.h"
 #include "Hephaestian/ECS/Systems/RenderSystem.h"
+#include "Hephaestian/ECS/Systems/SpriteSystems.h"
 
 namespace Hephaestian
 {
@@ -127,6 +128,7 @@ void Scene::updateSimulation(const InputManager& Input, float DeltaTimeInSeconds
 	// Order matters: everything that moves things goes first, then the hierarchy turns local transforms into world ones
 	Systems::updateFreeFlyMovementControllers(m_Registry, Input, DeltaTimeInSeconds);
 	Systems::updateConstantRotations(m_Registry, DeltaTimeInSeconds);
+	Systems::updateSpriteAnimations(m_Registry, DeltaTimeInSeconds);
 
 	++m_CurrentSimulationFrameNumber;
 	Systems::updateWorldTransformsFromHierarchy(m_Registry, m_CurrentSimulationFrameNumber);
@@ -141,6 +143,7 @@ void Scene::renderToRenderer(Vulkanised::VulkanRenderer& Renderer)
 	}
 
 	Systems::buildRenderInstancesFromModelRenderers(m_Registry, Renderer, m_RenderInstancesForCurrentFrame);
+	Systems::appendRenderInstancesFromSpriteRenderers(m_Registry, m_RenderInstancesForCurrentFrame);
 	Renderer.SubmitFrame(m_RenderInstancesForCurrentFrame);
 }
 

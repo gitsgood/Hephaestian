@@ -197,12 +197,12 @@ void Vulkanised::VulkanRenderer::SubmitFrame(const std::vector<RenderInstance>& 
 	m_GpuMemory.flushBufferWrites(CurrentFrame.m_CameraUniformBuffer);
 
 	// 2-3. Cull, group by mesh, write the instance data and the indirect draws straight into this frame's buffers
-	const uint32_t IndirectCommandCount = prepareFrameInstances(CurrentFrame, instances);
+	const FrameDrawCommandCounts DrawCommandCounts = prepareFrameInstances(CurrentFrame, instances);
 
 	// 4. Record. The whole pool is reset at once (cheaper than resetting the buffer on its own).
 	vkResetCommandPool(m_MainDevice.logicalDevice, CurrentFrame.m_CommandPool, 0);
 	prepareScreenshotBufferIfRequested();	// A screenshot was asked for: this frame also copies its finished image into a CPU-readable buffer
-	recordCommands(CurrentFrame, SwapchainImageIndex, IndirectCommandCount);
+	recordCommands(CurrentFrame, SwapchainImageIndex, DrawCommandCounts);
 
 	// 5. Submit (synchronization2): wait for the image to be available before writing colour, then signal this image's
 	//    render-finished semaphore once every command is done, and the frame's fence
@@ -833,6 +833,10 @@ void Vulkanised::VulkanRenderer::cleanup() noexcept
 		vkDestroyPipeline(m_MainDevice.logicalDevice, m_GraphicsPipeline, nullptr);
 		m_GraphicsPipeline = VK_NULL_HANDLE;
 	}
+	vkDestroyPipeline(m_MainDevice.logicalDevice, m_AlphaCutoutPipeline, nullptr);
+	m_AlphaCutoutPipeline = VK_NULL_HANDLE;
+	vkDestroyPipeline(m_MainDevice.logicalDevice, m_AdditivePipeline, nullptr);
+	m_AdditivePipeline = VK_NULL_HANDLE;
 	if (m_PipelineLayout != VK_NULL_HANDLE)
 	{
 		vkDestroyPipelineLayout(m_MainDevice.logicalDevice, m_PipelineLayout, nullptr);
@@ -1546,6 +1550,48 @@ void Vulkanised::VulkanRenderer::createGraphicsPipeline()
 		LOGNTHROW("failed to create pipeline(s)!");
 	}
 
+	// ALPHA CUTOUT PIPELINE: the same shaders, with the fragment shader's discard switched on through a specialization
+	// constant (so the opaque pipeline above has no discard in it, and keeps early depth testing). Two-sided: a sprite or a
+	// leaf seen from behind should still be there.
+	const VkBool32 c_IsAlphaCutoutPipeline{ VK_TRUE };
+	const VkSpecializationMapEntry AlphaCutoutSpecializationEntry{ 0, 0, sizeof(VkBool32) };	// constant_id = 0 in shader.frag
+	VkSpecializationInfo AlphaCutoutSpecializationInfo{};
+	AlphaCutoutSpecializationInfo.mapEntryCount = 1;
+	AlphaCutoutSpecializationInfo.pMapEntries = &AlphaCutoutSpecializationEntry;
+	AlphaCutoutSpecializationInfo.dataSize = sizeof(VkBool32);
+	AlphaCutoutSpecializationInfo.pData = &c_IsAlphaCutoutPipeline;
+	shaderStages[1].pSpecializationInfo = &AlphaCutoutSpecializationInfo;
+	rasterizerCreateInfo.cullMode = VK_CULL_MODE_NONE;
+	if (vkCreateGraphicsPipelines(m_MainDevice.logicalDevice, m_PipelineCache, 1, &graphicsPipelineCreateInfo, nullptr, &m_AlphaCutoutPipeline) != VK_SUCCESS)
+	{
+		LOGNTHROW("Failed to create the alpha cutout pipeline");
+	}
+
+	// ADDITIVE PIPELINE: the same shaders again, this time with constant_id 1 on: the colour (weighted by alpha) is ADDED to
+	// what's already there, so black adds nothing and bright parts glow. Tested against depth (things in front hide it) but
+	// never writes it, so additive sprites never hide each other or what's behind them. Addition doesn't care about order:
+	// no sorting needed. Still two-sided.
+	const VkBool32 c_IsAdditivePipeline{ VK_TRUE };
+	const VkSpecializationMapEntry AdditiveSpecializationEntry{ 1, 0, sizeof(VkBool32) };	// constant_id = 1 in shader.frag
+	VkSpecializationInfo AdditiveSpecializationInfo{};
+	AdditiveSpecializationInfo.mapEntryCount = 1;
+	AdditiveSpecializationInfo.pMapEntries = &AdditiveSpecializationEntry;
+	AdditiveSpecializationInfo.dataSize = sizeof(VkBool32);
+	AdditiveSpecializationInfo.pData = &c_IsAdditivePipeline;
+	shaderStages[1].pSpecializationInfo = &AdditiveSpecializationInfo;
+	colourState.blendEnable = VK_TRUE;
+	colourState.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;	// new + old
+	colourState.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	colourState.colorBlendOp = VK_BLEND_OP_ADD;
+	colourState.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;	// The image's alpha stays as it was
+	colourState.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	colourState.alphaBlendOp = VK_BLEND_OP_ADD;
+	depthStencilCreateInfo.depthWriteEnable = VK_FALSE;
+	if (vkCreateGraphicsPipelines(m_MainDevice.logicalDevice, m_PipelineCache, 1, &graphicsPipelineCreateInfo, nullptr, &m_AdditivePipeline) != VK_SUCCESS)
+	{
+		LOGNTHROW("Failed to create the additive pipeline");
+	}
+
 	// Destroy shader modules, no longer needed after pipeline created
 	vkDestroyShaderModule(m_MainDevice.logicalDevice, fragmentShaderModule, nullptr);
 	vkDestroyShaderModule(m_MainDevice.logicalDevice, vertexShaderModule, nullptr);
@@ -1815,7 +1861,7 @@ bool Vulkanised::VulkanRenderer::doesSwapchainNeedRecreation() const
 	return static_cast<uint32_t>(FramebufferWidth) != m_SwapchainExtent.width || static_cast<uint32_t>(FramebufferHeight) != m_SwapchainExtent.height;
 }
 
-void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, uint32_t IndirectCommandCount)
+void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, const FrameDrawCommandCounts& DrawCommandCounts)
 {
 	const VkCommandBuffer CommandBuffer = FrameToRecord.m_CommandBuffer;
 	const VkImage SwapchainImage = m_SwapchainImages[SwapchainImageIndex].m_Image;
@@ -1906,62 +1952,112 @@ void Vulkanised::VulkanRenderer::recordCommands(Rendering::FrameResources& Frame
 	const std::array<VkDescriptorSet, 2> FrameDescriptorSets{ FrameToRecord.m_FrameDescriptorSet, m_BindlessTextureSet };
 	vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, static_cast<uint32_t>(FrameDescriptorSets.size()), FrameDescriptorSets.data(), 0, nullptr);
 
-	// THE WHOLE SCENE IN ONE CALL: one indirect command per mesh (prepareFrameInstances wrote them), each drawing all of that
-	// mesh's visible instances. The GPU reads the commands from this frame's indirect buffer.
-	if (IndirectCommandCount > 0)
+	// THE WHOLE SCENE IN ONE CALL PER PIPELINE: one indirect command per mesh (prepareFrameInstances wrote them), each drawing
+	// all of that mesh's visible instances. The GPU reads the commands from this frame's indirect buffer.
+	// - Opaque first (the opaque pipeline is already bound)
+	if (DrawCommandCounts.m_OpaqueCommandCount > 0)
 	{
-		vkCmdDrawIndexedIndirect(CommandBuffer, FrameToRecord.m_IndirectCommandBuffer.m_Buffer, 0, IndirectCommandCount, sizeof(VkDrawIndexedIndirectCommand));
+		vkCmdDrawIndexedIndirect(CommandBuffer, FrameToRecord.m_IndirectCommandBuffer.m_Buffer, 0, DrawCommandCounts.m_OpaqueCommandCount, sizeof(VkDrawIndexedIndirectCommand));
+	}
+	// - Then alpha cutout (sprites, foliage), whose commands follow the opaque ones. Same layout, so the sets stay bound.
+	if (DrawCommandCounts.m_AlphaCutoutCommandCount > 0)
+	{
+		vkCmdBindPipeline(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_AlphaCutoutPipeline);
+		vkCmdDrawIndexedIndirect(CommandBuffer, FrameToRecord.m_IndirectCommandBuffer.m_Buffer, sizeof(VkDrawIndexedIndirectCommand) * DrawCommandCounts.m_OpaqueCommandCount,
+			DrawCommandCounts.m_AlphaCutoutCommandCount, sizeof(VkDrawIndexedIndirectCommand));
+	}
+
+	// - Then additive (glows), whose commands come last. Not here when the grid is drawn though: they write no depth, so the
+	//   grid (drawn later, in the overlay) would paint over them. They get their own scope right after the grid instead (2c).
+	const VkDeviceSize AdditiveCommandsOffset = sizeof(VkDrawIndexedIndirectCommand) * (DrawCommandCounts.m_OpaqueCommandCount + DrawCommandCounts.m_AlphaCutoutCommandCount);
+	const bool AreAdditiveDrawsAfterGrid = DrawCommandCounts.m_AdditiveCommandCount > 0 && IsInfiniteGridDrawn;
+	auto recordAdditiveDraws = [&]()
+	{
+		vkCmdBindPipeline(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_AdditivePipeline);
+		vkCmdDrawIndexedIndirect(CommandBuffer, FrameToRecord.m_IndirectCommandBuffer.m_Buffer, AdditiveCommandsOffset, DrawCommandCounts.m_AdditiveCommandCount, sizeof(VkDrawIndexedIndirectCommand));
+	};
+	if (DrawCommandCounts.m_AdditiveCommandCount > 0 && !AreAdditiveDrawsAfterGrid)
+	{
+		recordAdditiveDraws();
 	}
 
 	vkCmdEndRendering(CommandBuffer);
 
-	// 2b. OVERLAY: the grid and ImGui, drawn through the UNORM view of the same image (their colours are already sRGB, the
-	//     sRGB view would encode them a second time). Depth is kept from the scene, so the grid still hides behind meshes.
-	if (IsOverlayPassNeeded)
+	// 2b. MORE RENDERING ON THE SAME IMAGE, each scope picking up colour and depth where the last one left them:
+	//     - the grid and ImGui through the UNORM view (their colours are already sRGB, the sRGB view would encode them twice)
+	//     - additive sprites after the grid through the sRGB view (they're linear, like the rest of the scene)
+	//     Depth is kept from the scene, so the grid and the glows still hide behind meshes.
+	const Utilities::Vulkan::SwapchainImage& CurrentSwapchainImage = m_SwapchainImages[SwapchainImageIndex];
+	const VkImageView OverlayImageView = CurrentSwapchainImage.m_OverlayImageView != VK_NULL_HANDLE ? CurrentSwapchainImage.m_OverlayImageView : CurrentSwapchainImage.m_ImageView;
+	VkImageView OpenScopeImageView{ VK_NULL_HANDLE };	// The view the open scope draws through (none open yet)
+	auto switchToRenderingScope = [&](VkImageView WantedImageView, bool IsDepthNeededAfterwards)
 	{
-		// The scene's colour and depth writes land before the overlay loads them
-		VkMemoryBarrier2 SceneToOverlayBarrier{};
-		SceneToOverlayBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-		SceneToOverlayBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-		SceneToOverlayBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-		SceneToOverlayBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-		SceneToOverlayBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
+		if (OpenScopeImageView == WantedImageView)
+		{
+			return;	// Already drawing through it (no UNORM view on this device: everything shares one scope)
+		}
+		if (OpenScopeImageView != VK_NULL_HANDLE)
+		{
+			vkCmdEndRendering(CommandBuffer);
+		}
+
+		// The previous scope's colour and depth writes land before this one loads them
+		VkMemoryBarrier2 ScopeToScopeBarrier{};
+		ScopeToScopeBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+		ScopeToScopeBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+		ScopeToScopeBarrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		ScopeToScopeBarrier.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+		ScopeToScopeBarrier.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT
 			| VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-		VkDependencyInfo SceneToOverlayDependency{};
-		SceneToOverlayDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-		SceneToOverlayDependency.memoryBarrierCount = 1;
-		SceneToOverlayDependency.pMemoryBarriers = &SceneToOverlayBarrier;
-		vkCmdPipelineBarrier2(CommandBuffer, &SceneToOverlayDependency);
+		VkDependencyInfo ScopeToScopeDependency{};
+		ScopeToScopeDependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+		ScopeToScopeDependency.memoryBarrierCount = 1;
+		ScopeToScopeDependency.pMemoryBarriers = &ScopeToScopeBarrier;
+		vkCmdPipelineBarrier2(CommandBuffer, &ScopeToScopeDependency);
 
-		const Utilities::Vulkan::SwapchainImage& CurrentSwapchainImage = m_SwapchainImages[SwapchainImageIndex];
-		VkRenderingAttachmentInfo OverlayColourAttachment = ColourAttachment;
-		OverlayColourAttachment.imageView = CurrentSwapchainImage.m_OverlayImageView != VK_NULL_HANDLE ? CurrentSwapchainImage.m_OverlayImageView : CurrentSwapchainImage.m_ImageView;
-		OverlayColourAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-		VkRenderingAttachmentInfo OverlayDepthAttachment = DepthAttachment;
-		OverlayDepthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-		OverlayDepthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;	// Nobody reads depth after this
+		VkRenderingAttachmentInfo FollowingColourAttachment = ColourAttachment;
+		FollowingColourAttachment.imageView = WantedImageView;
+		FollowingColourAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		VkRenderingAttachmentInfo FollowingDepthAttachment = DepthAttachment;
+		FollowingDepthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+		FollowingDepthAttachment.storeOp = IsDepthNeededAfterwards ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
 
-		VkRenderingInfo OverlayRenderingInfo = RenderingInfo;
-		OverlayRenderingInfo.pColorAttachments = &OverlayColourAttachment;
-		OverlayRenderingInfo.pDepthAttachment = &OverlayDepthAttachment;
-		vkCmdBeginRendering(CommandBuffer, &OverlayRenderingInfo);
+		VkRenderingInfo FollowingRenderingInfo = RenderingInfo;
+		FollowingRenderingInfo.pColorAttachments = &FollowingColourAttachment;
+		FollowingRenderingInfo.pDepthAttachment = &FollowingDepthAttachment;
+		vkCmdBeginRendering(CommandBuffer, &FollowingRenderingInfo);
 		vkCmdSetViewport(CommandBuffer, 0, 1, &Viewport);
 		vkCmdSetScissor(CommandBuffer, 0, 1, &Scissor);
+		OpenScopeImageView = WantedImageView;
+	};
 
-		// INFINITE GRID: transparent, so it blends over whatever opaque geometry is already there
-		if (IsInfiniteGridDrawn)
-		{
-			vkCmdBindPipeline(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_InfiniteGridPipeline);
-			vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &FrameToRecord.m_FrameDescriptorSet, 0, nullptr);
-			vkCmdDraw(CommandBuffer, 6, 1, 0, 0);	// One quad, two triangles, all made up in the vertex shader
-		}
+	// INFINITE GRID: transparent, so it blends over whatever opaque geometry is already there
+	if (IsInfiniteGridDrawn)
+	{
+		switchToRenderingScope(OverlayImageView, AreAdditiveDrawsAfterGrid);
+		vkCmdBindPipeline(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_InfiniteGridPipeline);
+		vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 1, &FrameToRecord.m_FrameDescriptorSet, 0, nullptr);
+		vkCmdDraw(CommandBuffer, 6, 1, 0, 0);	// One quad, two triangles, all made up in the vertex shader
+	}
 
-		// DEAR IMGUI, very last so it sits on top of everything (it binds its own pipeline, viewport and scissor)
-		if (m_ShouldRenderImGuiThisFrame)
-		{
-			ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), CommandBuffer);
-		}
+	// 2c. ADDITIVE SPRITES ON TOP OF THE GRID (vertex/index buffers are still bound from the scene, the sets are rebound
+	//     since the grid's binding replaced set 0)
+	if (AreAdditiveDrawsAfterGrid)
+	{
+		switchToRenderingScope(CurrentSwapchainImage.m_ImageView, false);
+		vkCmdBindDescriptorSets(CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, static_cast<uint32_t>(FrameDescriptorSets.size()), FrameDescriptorSets.data(), 0, nullptr);
+		recordAdditiveDraws();
+	}
 
+	// DEAR IMGUI, very last so it sits on top of everything (it binds its own pipeline, viewport and scissor)
+	if (m_ShouldRenderImGuiThisFrame)
+	{
+		switchToRenderingScope(OverlayImageView, false);
+		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), CommandBuffer);
+	}
+
+	if (OpenScopeImageView != VK_NULL_HANDLE)
+	{
 		vkCmdEndRendering(CommandBuffer);
 	}
 

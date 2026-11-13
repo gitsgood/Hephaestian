@@ -36,10 +36,12 @@ set(SOURCES
     include/Hephaestian/ECS/Scene.h                             src/ECS/Scene.cpp
     include/Hephaestian/ECS/SceneFile.h                         src/ECS/SceneSerialization.cpp
     include/Hephaestian/Assets/AssetLibrary.h                   src/Assets/AssetLibrary.cpp
+    include/Hephaestian/Assets/SpriteSheet.h                    src/Assets/SpriteSheet.cpp
     include/Hephaestian/ECS/Systems/TransformHierarchySystem.h  src/ECS/Systems/TransformHierarchySystem.cpp
     include/Hephaestian/ECS/Systems/MovementSystems.h           src/ECS/Systems/MovementSystems.cpp
     include/Hephaestian/ECS/Systems/CameraSystem.h              src/ECS/Systems/CameraSystem.cpp
     include/Hephaestian/ECS/Systems/RenderSystem.h              src/ECS/Systems/RenderSystem.cpp
+    include/Hephaestian/ECS/Systems/SpriteSystems.h             src/ECS/Systems/SpriteSystems.cpp
     include/Hephaestian/Assets/ModelImporter.h                  src/Assets/ModelImporter.cpp
     include/Hephaestian/Settings/HephaestianSettings.h          src/Settings/HephaestianSettings.cpp
     include/Hephaestian/Settings/HephaestianSettingsManager.h   src/Settings/HephaestianSettingsManager.cpp

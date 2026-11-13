@@ -2,6 +2,7 @@
 #define HEPHAESTIAN_COMPONENTS_H
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -18,6 +19,8 @@
 *
 * World conventions (same as GLM and the Vulkanised shaders): right-handed, +Y up, an unrotated entity looks down -Z.
 */
+namespace Hephaestian::Assets { struct SpriteSheet; }
+
 namespace Hephaestian::Components
 {
 
@@ -73,6 +76,7 @@ struct SceneSerializationComponent
 	std::string m_ModelAssetName;		// Name in the scene's asset table, or empty
 	std::string m_PrimitiveShapeName;	// "quad", "cube", "sphere", or empty
 	std::string m_TextureAssetName;		// Texture override's name in the asset table, or empty
+	std::string m_SpriteSheetAssetName;	// Sprite sheet's name in the asset table, or empty
 };
 
 // Turns the entity into something that can be looked through. The entity's world transform IS the eye.
@@ -113,6 +117,40 @@ struct ConstantRotationComponent
 {
 	glm::vec3 m_RotationAxis{ 0.0f, 1.0f, 0.0f };
 	float m_RotationSpeedInDegreesPerSecond{ 45.0f };
+};
+
+
+// How a sprite turns towards the camera
+enum class SpriteBillboardMode
+{
+	None,				// Placed like any other object, by its transform (signs, decals, a flat 2D-style layer). Visible from both sides.
+	FaceCamera,			// Always fully facing the camera, whatever angle it's seen from (particles, effects, pickups)
+	FaceCameraUpright	// Turns towards the camera around the world's vertical axis only (characters, trees: they never tilt)
+};
+
+// Draws one frame of a sprite sheet as a quad at this entity's world transform. Its size is the frame's size in pixels
+// divided by the sheet's pixels per unit, times the transform's scale. Pixels under 50% alpha are cut out.
+struct SpriteRendererComponent
+{
+	std::shared_ptr<const Assets::SpriteSheet> m_SpriteSheet;	// From AssetLibrary::getOrLoadSpriteSheet, shared by every sprite using it
+	std::uint32_t m_FrameIndex{ 0 };							// Set by a SpriteAnimatorComponent, if there is one
+	glm::vec3 m_Tint{ 1.0f };									// Multiplies the image's colours (picked in sRGB, like every colour)
+	glm::vec2 m_Pivot{ 0.5f, 0.0f };							// The point of the frame sitting at the entity's position: (0.5, 0) = bottom centre (feet), (0.5, 0.5) = centre
+	SpriteBillboardMode m_BillboardMode{ SpriteBillboardMode::None };
+	bool m_IsFlippedHorizontally{ false };						// Mirrored left-right (a character walking the other way)
+	bool m_IsFlippedVertically{ false };
+	bool m_IsLit{ false };										// Off: shown exactly as drawn. On: lit like any other surface.
+	bool m_IsVisible{ true };
+};
+
+// Plays the sprite sheet's animation clips on the SpriteRendererComponent of the same entity (it picks the frame)
+struct SpriteAnimatorComponent
+{
+	std::uint32_t m_ClipIndex{ 0 };					// In the sprite sheet's clips (use Systems::playSpriteAnimationClip to change it by name)
+	float m_ElapsedTimeInSeconds{ 0.0f };			// Time into the clip
+	float m_PlaybackSpeed{ 1.0f };					// 2 = twice as fast, negative = backwards
+	bool m_IsPlaying{ true };
+	bool m_HasFinished{ false };					// A "once" clip reached its last frame
 };
 
 }

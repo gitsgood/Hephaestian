@@ -1,0 +1,127 @@
+{
+   "assets": {
+      "textures": {
+         "HephaestosLogo": "resources/Hephaestos.png"
+      },
+      "spriteSheets": {
+         "Coin": "Sprites/Coin.json",
+         "LaFemme": "Sprites/LaFemme",
+         "Ricardo": "Sprites/Ricardo",
+         "Slime": "Sprites/Slime.spritesheet.json"
+      }
+   },
+   "clearColour": [0.24, 0.28, 0.36],
+   "entities": [
+      {
+         "id": "Player",
+         "position": [0.4, 1.1, 7.5],
+         "rotationInDegrees": [-1, 0, 0],
+         "freeFlyController": {}
+      },
+      {
+         "id": "PlayerCamera",
+         "parent": "Player",
+         "camera": {}
+      },
+      {
+         "id": "Crate",
+         "position": [1.6, 0.5, -0.8],
+         "rotationInDegrees": [0, 30, 0],
+         "primitive": "cube",
+         "texture": "HephaestosLogo"
+      },
+      {
+         "id": "HoppingSlime",
+         "position": [0, 0, 0],
+         "scale": [1.5, 1.5, 1.5],
+         "sprite": { "sheet": "Slime", "billboard": "faceCameraUpright" },
+         "spriteAnimation": { "clip": "hop" }
+      },
+      {
+         "id": "IdleSlime",
+         "name": "Idle slime (flipped)",
+         "position": [-1.6, 0, 1],
+         "sprite": { "sheet": "Slime", "billboard": "faceCameraUpright", "flipX": true },
+         "spriteAnimation": { "clip": "idle" }
+      },
+      {
+         "id": "BlueSlime",
+         "name": "Blue slime (tinted, faster)",
+         "position": [1.5, 0, 1.4],
+         "sprite": { "sheet": "Slime", "billboard": "faceCameraUpright", "tint": [0.55, 0.75, 1.0] },
+         "spriteAnimation": { "clip": "idle", "speed": 1.6 }
+      },
+      {
+         "id": "LitSlime",
+         "name": "Lit slime (slow hop)",
+         "position": [-3, 0, -1.5],
+         "scale": [2, 2, 2],
+         "sprite": { "sheet": "Slime", "billboard": "faceCameraUpright", "lit": true },
+         "spriteAnimation": { "clip": "hop", "speed": 0.5 }
+      },
+      {
+         "id": "LandingSlime",
+         "name": "Landing slime (plays once, then holds)",
+         "position": [3, 0, 1.5],
+         "sprite": { "sheet": "Slime", "billboard": "faceCameraUpright" },
+         "spriteAnimation": { "clip": "land" }
+      },
+      {
+         "id": "SpinningSign",
+         "name": "Spinning sign (no billboard, seen from both sides)",
+         "position": [3.2, 0, -2.5],
+         "scale": [1.5, 1.5, 1.5],
+         "sprite": { "sheet": "Slime", "frame": 2 },
+         "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 60 }
+      },
+      {
+         "id": "FloatingSlime",
+         "name": "Floating slime (faces the camera fully, centre pivot)",
+         "position": [-0.6, 2.6, -2.5],
+         "scale": [2, 2, 2],
+         "sprite": { "sheet": "Slime", "billboard": "faceCamera", "pivot": [0.5, 0.5] },
+         "spriteAnimation": { "clip": "idle" }
+      },
+      {
+         "id": "CoinSpin",
+         "position": [-2, 1.3, -0.5],
+         "sprite": { "sheet": "Coin", "billboard": "faceCamera", "pivot": [0.5, 0.5] },
+         "spriteAnimation": { "clip": "spin" }
+      },
+      {
+         "id": "CoinSpinFast",
+         "position": [-1.2, 1.3, -0.5],
+         "sprite": { "sheet": "Coin", "billboard": "faceCamera", "pivot": [0.5, 0.5] },
+         "spriteAnimation": { "clip": "spin", "speed": 2 }
+      },
+      {
+         "id": "CoinSpinBackwards",
+         "position": [-0.4, 1.3, -0.5],
+         "sprite": { "sheet": "Coin", "billboard": "faceCamera", "pivot": [0.5, 0.5] },
+         "spriteAnimation": { "clip": "spinBackwards" }
+      },
+      {
+         "id": "CoinWobble",
+         "position": [0.4, 1.3, -0.5],
+         "sprite": { "sheet": "Coin", "billboard": "faceCamera", "pivot": [0.5, 0.5] },
+         "spriteAnimation": { "clip": "wobble" }
+      },
+      {
+         "id": "LaFemme",
+         "name": "La Femme (48 pages, additive)",
+         "position": [-6.5, 0, -4],
+         "scale": [1.6, 1.6, 1.6],
+         "sprite": { "sheet": "LaFemme", "billboard": "faceCameraUpright" },
+         "spriteAnimation": { "clip": "play" }
+      },
+      {
+         "id": "Ricardo",
+         "name": "Ricardo (30 pages, opaque)",
+         "position": [4.5, 0, -4],
+         "scale": [2, 2, 2],
+         "sprite": { "sheet": "Ricardo", "billboard": "faceCameraUpright" },
+         "spriteAnimation": { "clip": "play" }
+      }
+   ],
+   "activeCamera": "PlayerCamera"
+}

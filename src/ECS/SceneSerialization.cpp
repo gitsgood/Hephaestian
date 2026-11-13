@@ -6,6 +6,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -14,6 +15,7 @@
 
 #include "Hephaestian/Assets/AssetLibrary.h"
 #include "Hephaestian/ECS/Components.h"
+#include "Hephaestian/ECS/Systems/SpriteSystems.h"
 #include "Hephaestian/Settings/HephaestianSettings.h"
 
 namespace Hephaestian
@@ -36,6 +38,30 @@ namespace
 	[[nodiscard]] std::array<float, 3> convertVectorToArrayForSceneFile(const glm::vec3& VectorToConvert) noexcept
 	{
 		return { roundForSceneFile(VectorToConvert.x), roundForSceneFile(VectorToConvert.y), roundForSceneFile(VectorToConvert.z) };
+	}
+
+	// Billboard modes as scene files spell them
+	constexpr std::array<std::pair<std::string_view, Components::SpriteBillboardMode>, 3> c_SpriteBillboardModeNames{ {
+		{ "none", Components::SpriteBillboardMode::None },
+		{ "faceCamera", Components::SpriteBillboardMode::FaceCamera },
+		{ "faceCameraUpright", Components::SpriteBillboardMode::FaceCameraUpright } } };
+
+	[[nodiscard]] std::optional<Components::SpriteBillboardMode> parseSpriteBillboardModeName(std::string_view BillboardModeName) noexcept
+	{
+		for (const auto& [CurrentName, CurrentMode] : c_SpriteBillboardModeNames)
+		{
+			if (CurrentName == BillboardModeName) { return CurrentMode; }
+		}
+		return std::nullopt;
+	}
+
+	[[nodiscard]] std::string_view getSpriteBillboardModeName(Components::SpriteBillboardMode BillboardMode) noexcept
+	{
+		for (const auto& [CurrentName, CurrentMode] : c_SpriteBillboardModeNames)
+		{
+			if (CurrentMode == BillboardMode) { return CurrentName; }
+		}
+		return "none";
 	}
 }
 
@@ -89,6 +115,18 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 		else
 		{
 			LOGW("Scene {}: texture '{}' ({}) couldn't be loaded, entities using it keep their own textures.", SceneFilePath.filename().string(), TextureAssetName, TextureRelativePath);
+		}
+	}
+	std::unordered_map<std::string, std::shared_ptr<const Assets::SpriteSheet>> SpriteSheetsByAssetName;
+	for (const auto& [SpriteSheetAssetName, SpriteSheetRelativePath] : m_SceneAssetTable.m_SpriteSheetPathsByName)
+	{
+		if (std::shared_ptr<const Assets::SpriteSheet> LoadedSpriteSheet = AssetLibraryToLoadFrom.getOrLoadSpriteSheet(SpriteSheetRelativePath))
+		{
+			SpriteSheetsByAssetName.emplace(SpriteSheetAssetName, std::move(LoadedSpriteSheet));
+		}
+		else
+		{
+			LOGW("Scene {}: sprite sheet '{}' ({}) couldn't be loaded, sprites using it won't be drawn.", SceneFilePath.filename().string(), SpriteSheetAssetName, SpriteSheetRelativePath);
 		}
 	}
 
@@ -184,6 +222,61 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 			const SceneFile::SceneFileConstantRotationBlock& RotationDescription = EntityDescription.m_ConstantRotation.value();
 			m_Registry.emplace<Components::ConstantRotationComponent>(NewEntity, convertArrayToVector(RotationDescription.m_RotationAxis), RotationDescription.m_RotationSpeedInDegreesPerSecond);
 		}
+
+		// Sprite (and its animation), drawing a sheet from the asset table
+		if (EntityDescription.m_Sprite.has_value())
+		{
+			const SceneFile::SceneFileSpriteBlock& SpriteDescription = EntityDescription.m_Sprite.value();
+			SerializationRecord.m_SpriteSheetAssetName = SpriteDescription.m_SpriteSheetAssetName;	// Kept for saving, even if it didn't load
+
+			Components::SpriteRendererComponent NewSprite{};
+			if (const auto FoundSpriteSheet = SpriteSheetsByAssetName.find(SpriteDescription.m_SpriteSheetAssetName); FoundSpriteSheet != SpriteSheetsByAssetName.end())
+			{
+				NewSprite.m_SpriteSheet = FoundSpriteSheet->second;
+			}
+			else if (!m_SceneAssetTable.m_SpriteSheetPathsByName.contains(SpriteDescription.m_SpriteSheetAssetName))
+			{
+				LOGW("Scene {}: entity '{}' uses sprite sheet '{}', which isn't in the asset table.", SceneFilePath.filename().string(), SceneIdentifier, SpriteDescription.m_SpriteSheetAssetName);
+			}
+			NewSprite.m_FrameIndex = SpriteDescription.m_FrameIndex;
+			NewSprite.m_Tint = convertArrayToVector(SpriteDescription.m_Tint);
+			NewSprite.m_Pivot = { SpriteDescription.m_Pivot[0], SpriteDescription.m_Pivot[1] };
+			if (const std::optional<Components::SpriteBillboardMode> BillboardMode = parseSpriteBillboardModeName(SpriteDescription.m_BillboardModeName))
+			{
+				NewSprite.m_BillboardMode = BillboardMode.value();
+			}
+			else
+			{
+				LOGW("Scene {}: entity '{}' has an unknown billboard mode '{}' (none, faceCamera or faceCameraUpright).", SceneFilePath.filename().string(), SceneIdentifier, SpriteDescription.m_BillboardModeName);
+			}
+			NewSprite.m_IsFlippedHorizontally = SpriteDescription.m_IsFlippedHorizontally;
+			NewSprite.m_IsFlippedVertically = SpriteDescription.m_IsFlippedVertically;
+			NewSprite.m_IsLit = SpriteDescription.m_IsLit;
+			NewSprite.m_IsVisible = EntityDescription.m_IsVisible.value_or(true);
+			const Components::SpriteRendererComponent& EmplacedSprite = m_Registry.emplace<Components::SpriteRendererComponent>(NewEntity, std::move(NewSprite));
+
+			if (EntityDescription.m_SpriteAnimation.has_value())
+			{
+				// Only animated if the clip exists: otherwise the sprite keeps the frame it was given (an animator would
+				// quietly play the sheet's first clip instead)
+				const SceneFile::SceneFileSpriteAnimationBlock& AnimationDescription = EntityDescription.m_SpriteAnimation.value();
+				Components::SpriteAnimatorComponent NewAnimator{};
+				NewAnimator.m_PlaybackSpeed = AnimationDescription.m_PlaybackSpeed;
+				if (Systems::playSpriteAnimationClip(NewAnimator, EmplacedSprite, AnimationDescription.m_ClipName))
+				{
+					NewAnimator.m_IsPlaying = AnimationDescription.m_IsPlaying;
+					m_Registry.emplace<Components::SpriteAnimatorComponent>(NewEntity, NewAnimator);
+				}
+				else if (EmplacedSprite.m_SpriteSheet != nullptr)
+				{
+					LOGW("Scene {}: entity '{}' plays clip '{}', which sprite sheet '{}' doesn't have: it isn't animated.", SceneFilePath.filename().string(), SceneIdentifier, AnimationDescription.m_ClipName, SpriteDescription.m_SpriteSheetAssetName);
+				}
+			}
+		}
+		else if (EntityDescription.m_SpriteAnimation.has_value())
+		{
+			LOGW("Scene {}: entity '{}' has a spriteAnimation but no sprite to play it on.", SceneFilePath.filename().string(), SceneIdentifier);
+		}
 	}
 
 	// 3. PARENTS, now that every entity exists
@@ -232,7 +325,8 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 		}
 	}
 
-	LOG("Loaded scene {}: {} entities, {} models, {} textures", SceneFilePath.filename().string(), EntitiesBySceneIdentifier.size(), ModelIdentifiersByAssetName.size(), TextureIdentifiersByAssetName.size());
+	LOG("Loaded scene {}: {} entities, {} models, {} textures, {} sprite sheets", SceneFilePath.filename().string(), EntitiesBySceneIdentifier.size(),
+		ModelIdentifiersByAssetName.size(), TextureIdentifiersByAssetName.size(), SpriteSheetsByAssetName.size());
 	return true;
 }
 
@@ -320,6 +414,39 @@ bool Scene::saveToJsonFile(const std::filesystem::path& SceneFilePath) const
 		if (ModelRenderer != nullptr && !ModelRenderer->m_IsVisible)
 		{
 			EntityDescription.m_IsVisible = false;	// Only written when it differs from the default
+		}
+
+		// Sprite: also written back by the sheet's NAME in the asset table
+		if (const auto* Sprite = m_Registry.try_get<Components::SpriteRendererComponent>(CurrentEntity))
+		{
+			if (SerializationRecord != nullptr && !SerializationRecord->m_SpriteSheetAssetName.empty())
+			{
+				SceneFile::SceneFileSpriteBlock SpriteDescription{};
+				SpriteDescription.m_SpriteSheetAssetName = SerializationRecord->m_SpriteSheetAssetName;
+				SpriteDescription.m_FrameIndex = Sprite->m_FrameIndex;
+				SpriteDescription.m_Tint = convertVectorToArrayForSceneFile(Sprite->m_Tint);
+				SpriteDescription.m_Pivot = { roundForSceneFile(Sprite->m_Pivot.x), roundForSceneFile(Sprite->m_Pivot.y) };
+				SpriteDescription.m_BillboardModeName = std::string(getSpriteBillboardModeName(Sprite->m_BillboardMode));
+				SpriteDescription.m_IsFlippedHorizontally = Sprite->m_IsFlippedHorizontally;
+				SpriteDescription.m_IsFlippedVertically = Sprite->m_IsFlippedVertically;
+				SpriteDescription.m_IsLit = Sprite->m_IsLit;
+				EntityDescription.m_Sprite = SpriteDescription;
+				if (!Sprite->m_IsVisible)
+				{
+					EntityDescription.m_IsVisible = false;
+				}
+
+				const auto* Animator = m_Registry.try_get<Components::SpriteAnimatorComponent>(CurrentEntity);
+				if (Animator != nullptr && Sprite->m_SpriteSheet != nullptr && Animator->m_ClipIndex < Sprite->m_SpriteSheet->m_Clips.size())
+				{
+					EntityDescription.m_SpriteAnimation = SceneFile::SceneFileSpriteAnimationBlock{ Sprite->m_SpriteSheet->m_Clips[Animator->m_ClipIndex].m_ClipName,
+						roundForSceneFile(Animator->m_PlaybackSpeed), Animator->m_IsPlaying };
+				}
+			}
+			else
+			{
+				LOGW("Saving scene: entity '{}' has a sprite whose sheet wasn't loaded from a scene file, so it's saved without it.", EntityDescription.m_SceneIdentifier);
+			}
 		}
 
 		if (const auto* Camera = m_Registry.try_get<Components::CameraComponent>(CurrentEntity))

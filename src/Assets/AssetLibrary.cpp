@@ -1,9 +1,13 @@
 #include "Hephaestian/Assets/AssetLibrary.h"
 
+#include <chrono>
 #include <cmath>
+#include <future>
+#include <thread>
 #include <vector>
 
 #include <glm/gtc/constants.hpp>
+#include <stb_image.h>
 
 #include <Vulkanised/Logger.h>
 #include <Vulkanised/utils/FileUtils.h>
@@ -13,7 +17,7 @@ namespace Hephaestian::Assets
 
 namespace
 {
-	constexpr std::array<std::string_view, static_cast<std::size_t>(PrimitiveShape::Count)> c_PrimitiveShapeNames{ "quad", "cube", "sphere" };
+	constexpr std::array<std::string_view, static_cast<std::size_t>(PrimitiveShape::Count)> c_PrimitiveShapeNames{ "quad", "cube", "sphere", "sprite" };
 
 	[[nodiscard]] std::filesystem::path convertToAbsoluteAssetPath(const std::filesystem::path& AssetRelativePath)
 	{
@@ -109,6 +113,12 @@ namespace
 			break;
 		}
 
+		case PrimitiveShape::Sprite:
+			// Texture right = +x, texture up = +y, so frame (0, 0) is its top-left corner like in the image. Pivots and flips
+			// are applied per instance, billboarding in the vertex shader.
+			appendSquareFace(OutVertices, OutTriangleIndices, glm::vec3(0.0f), c_PositiveZ, c_PositiveX, c_PositiveY);
+			break;
+
 		case PrimitiveShape::Count:
 			break;
 		}
@@ -188,6 +198,83 @@ std::uint32_t AssetLibrary::getOrCreatePrimitiveModel(PrimitiveShape Shape)
 		CachedPrimitiveModel = m_Renderer.createModelFromSingleMesh(PrimitiveMeshIdentifier, WhiteTextureIdentifier);
 	}
 	return CachedPrimitiveModel.value();
+}
+
+std::shared_ptr<const SpriteSheet> AssetLibrary::getOrLoadSpriteSheet(const std::filesystem::path& SpriteSheetRelativePath)
+{
+	const std::filesystem::path AbsoluteSpriteSheetPath = convertToAbsoluteAssetPath(SpriteSheetRelativePath);
+	const std::string AbsoluteSpriteSheetPathAsText = AbsoluteSpriteSheetPath.generic_string();
+	if (const auto CachedSpriteSheet = m_SpriteSheetsByAbsolutePath.find(AbsoluteSpriteSheetPathAsText); CachedSpriteSheet != m_SpriteSheetsByAbsolutePath.end())
+	{
+		return CachedSpriteSheet->second;
+	}
+
+	std::optional<SpriteSheetDescription> Description = readSpriteSheetFile(AbsoluteSpriteSheetPath);	// Logs its own problems
+	if (!Description.has_value())
+	{
+		return nullptr;
+	}
+
+	// Its own texture loads rather than getOrLoadTexture: sprite sheets usually want different options (pixelated, no
+	// mipmaps), and may need a transparent colour applied to the pixels first.
+	// Long animations can have dozens of big pages: they're decoded several at once on worker threads, then uploaded one
+	// batch at a time (waiting for each), so the staging memory never holds more than one batch.
+	const auto LoadStartTime = std::chrono::steady_clock::now();
+	auto LoadedSpriteSheet = std::make_shared<SpriteSheet>(std::move(Description->m_SpriteSheet));
+	const std::vector<std::filesystem::path>& PageImageFilePaths = Description->m_PageImageFilePaths;
+	const std::size_t PagesPerBatch = std::max<std::size_t>(std::thread::hardware_concurrency(), 1);
+	struct DecodedPage { unsigned char* m_RgbaPixels{ nullptr }; int m_WidthInPixels{ 0 }; int m_HeightInPixels{ 0 }; };
+	for (std::size_t BatchFirstPageIndex{ 0 }; BatchFirstPageIndex < PageImageFilePaths.size(); BatchFirstPageIndex += PagesPerBatch)
+	{
+		const std::size_t BatchEndPageIndex = std::min(BatchFirstPageIndex + PagesPerBatch, PageImageFilePaths.size());
+		std::vector<std::future<DecodedPage>> PagesBeingDecoded;
+		for (std::size_t CurrentPageIndex = BatchFirstPageIndex; CurrentPageIndex < BatchEndPageIndex; ++CurrentPageIndex)
+		{
+			PagesBeingDecoded.push_back(std::async(std::launch::async, [&Description, &PageImageFilePaths, CurrentPageIndex]()
+			{
+				DecodedPage Page{};
+				Page.m_RgbaPixels = decodeSpriteSheetPage(Description.value(), PageImageFilePaths[CurrentPageIndex], Page.m_WidthInPixels, Page.m_HeightInPixels);
+				return Page;
+			}));
+		}
+
+		// Every future is collected (and its pixels freed) even after a failure, so no worker is left running
+		bool HasBatchFailed{ false };
+		for (std::size_t CurrentPageIndex = BatchFirstPageIndex; CurrentPageIndex < BatchEndPageIndex; ++CurrentPageIndex)
+		{
+			const DecodedPage Page = PagesBeingDecoded[CurrentPageIndex - BatchFirstPageIndex].get();
+			if (Page.m_RgbaPixels == nullptr)
+			{
+				LOGE("Sprite sheet {}: its image {} couldn't be loaded ({}).", AbsoluteSpriteSheetPathAsText, PageImageFilePaths[CurrentPageIndex].string(), stbi_failure_reason());
+				HasBatchFailed = true;
+				continue;
+			}
+			if (!HasBatchFailed)
+			{
+				LoadedSpriteSheet->m_PageTextureIdentifiers.push_back(static_cast<std::uint32_t>(m_Renderer.createTextureFromRgbaPixels(Page.m_RgbaPixels,
+					static_cast<std::uint32_t>(Page.m_WidthInPixels), static_cast<std::uint32_t>(Page.m_HeightInPixels), Description->m_TextureOptions)));
+			}
+			stbi_image_free(Page.m_RgbaPixels);
+		}
+		if (HasBatchFailed)
+		{
+			return nullptr;	// (The pages already uploaded stay, unused, until the renderer shuts down)
+		}
+		if (PageImageFilePaths.size() > 1)
+		{
+			m_Renderer.flushPendingUploads();
+		}
+	}
+
+	// Every sprite draws the same standing quad: its mesh, straight from the primitive model
+	const std::uint32_t SpriteQuadModelIdentifier = getOrCreatePrimitiveModel(PrimitiveShape::Sprite);
+	LoadedSpriteSheet->m_QuadMeshIdentifier = m_Renderer.getModelAsset(SpriteQuadModelIdentifier).m_Submeshes.front().m_MeshIdentifier;
+
+	const double LoadTimeInMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - LoadStartTime).count();
+	LOG("Loaded sprite sheet {}: {} frames on {} page(s), {} clips ({:.0f} ms).", AbsoluteSpriteSheetPath.filename().string(), LoadedSpriteSheet->m_Frames.size(),
+		LoadedSpriteSheet->m_PageTextureIdentifiers.size(), LoadedSpriteSheet->m_Clips.size(), LoadTimeInMilliseconds);
+	m_SpriteSheetsByAbsolutePath.emplace(AbsoluteSpriteSheetPathAsText, LoadedSpriteSheet);
+	return LoadedSpriteSheet;
 }
 
 }

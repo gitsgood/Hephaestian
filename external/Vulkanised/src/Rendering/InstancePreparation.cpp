@@ -10,17 +10,36 @@
 /*
 * Turns what the application submitted into what the GPU draws, every frame:
 *	1. drop instances outside the camera's frustum (and invalid ones)
-*	2. group the survivors by mesh (counting sort: one pass to count, one to place, no comparisons)
+*	2. group the survivors by pipeline (opaque, then alpha cutout, then additive) and by mesh, with a counting sort (one pass to count,
+*	   one to place, no comparisons)
 *	3. write each one's GpuInstanceData straight into this frame's mapped instance buffer, grouped like that
-*	4. write one VkDrawIndexedIndirectCommand per mesh that has visible instances
-* The whole scene is then a single vkCmdDrawIndexedIndirect. Textures no longer split batches (they're bindless and picked
+*	4. write one VkDrawIndexedIndirectCommand per (pipeline, mesh) group that has visible instances
+* The scene is then one vkCmdDrawIndexedIndirect per pipeline. Textures no longer split batches (they're bindless and picked
 * per instance), so a mesh is drawn once however many textures its instances use.
 */
 
-uint32_t Vulkanised::VulkanRenderer::prepareFrameInstances(Rendering::FrameResources& FrameToFill, const std::vector<RenderInstance>& SubmittedInstances)
+Vulkanised::VulkanRenderer::FrameDrawCommandCounts Vulkanised::VulkanRenderer::prepareFrameInstances(Rendering::FrameResources& FrameToFill, const std::vector<RenderInstance>& SubmittedInstances)
 {
+	// Groups: one per (pipeline, mesh), pipeline-major in drawing order. [0, MeshCount) are the opaque pipeline's meshes,
+	// [MeshCount, 2 * MeshCount) the alpha cutout pipeline's, [2 * MeshCount, 3 * MeshCount) the additive pipeline's.
+	constexpr size_t c_PipelineCount{ 3 };
 	const size_t MeshCount = m_Meshes.size();
-	m_VisibleInstanceCountPerMesh.assign(MeshCount, 0);
+	const size_t GroupCount = MeshCount * c_PipelineCount;
+	auto getGroupOfInstance = [MeshCount](const RenderInstance& Instance) -> size_t
+	{
+		size_t PipelineIndex{ 0 };
+		if ((Instance.m_Flags & RenderInstanceFlags::c_Additive) != 0)
+		{
+			PipelineIndex = 2;
+		}
+		else if ((Instance.m_Flags & RenderInstanceFlags::c_AlphaCutout) != 0)
+		{
+			PipelineIndex = 1;
+		}
+		return PipelineIndex * MeshCount + Instance.meshID;
+	};
+
+	m_VisibleInstanceCountPerMesh.assign(GroupCount, 0);
 	m_VisibleInstanceIndices.clear();
 	m_VisibleInstanceIndices.reserve(SubmittedInstances.size());
 
@@ -32,7 +51,7 @@ uint32_t Vulkanised::VulkanRenderer::prepareFrameInstances(Rendering::FrameResou
 	}
 	const Rendering::FrustumPlanes CullingFrustum = Rendering::extractFrustumPlanes(m_CullingViewProjection);
 
-	// 1. WHAT'S VISIBLE (and valid), counted per mesh
+	// 1. WHAT'S VISIBLE (and valid), counted per group
 	uint32_t CulledInstanceCount{ 0 };
 	uint32_t InvalidInstanceCount{ 0 };
 	for (size_t CurrentInstanceIndex{ 0 }; CurrentInstanceIndex < SubmittedInstances.size(); ++CurrentInstanceIndex)
@@ -46,9 +65,12 @@ uint32_t Vulkanised::VulkanRenderer::prepareFrameInstances(Rendering::FrameResou
 
 		if (m_IsFrustumCullingEnabled)
 		{
+			// The pivot offset moves the mesh away from its own centre (in mesh units), so the sphere grows by that much.
+			// Billboards ignore the instance's rotation, which a sphere doesn't care about anyway.
 			const MeshAsset& InstanceMesh = m_Meshes[CurrentInstance.meshID];
 			const glm::vec3 WorldCentre = glm::vec3(CurrentInstance.transform * glm::vec4(InstanceMesh.m_BoundingSphereCentre, 1.0f));
-			const float WorldRadius = InstanceMesh.m_BoundingSphereRadius * Rendering::getLargestScaleOfTransform(CurrentInstance.transform);
+			const float LocalRadius = InstanceMesh.m_BoundingSphereRadius + glm::length(CurrentInstance.m_PivotOffset);
+			const float WorldRadius = LocalRadius * Rendering::getLargestScaleOfTransform(CurrentInstance.transform);
 			if (!Rendering::isSphereInsideFrustum(CullingFrustum, WorldCentre, WorldRadius))
 			{
 				++CulledInstanceCount;
@@ -57,7 +79,7 @@ uint32_t Vulkanised::VulkanRenderer::prepareFrameInstances(Rendering::FrameResou
 		}
 
 		m_VisibleInstanceIndices.push_back(static_cast<uint32_t>(CurrentInstanceIndex));
-		++m_VisibleInstanceCountPerMesh[CurrentInstance.meshID];
+		++m_VisibleInstanceCountPerMesh[getGroupOfInstance(CurrentInstance)];
 	}
 
 	if (InvalidInstanceCount > 0 && !m_HasWarnedAboutInvalidRenderInstances)
@@ -66,48 +88,56 @@ uint32_t Vulkanised::VulkanRenderer::prepareFrameInstances(Rendering::FrameResou
 		m_HasWarnedAboutInvalidRenderInstances = true;
 	}
 
-	// 2. ONE INDIRECT DRAW PER MESH: where each mesh's instances start (prefix sums), and the draw itself
+	// 2. ONE INDIRECT DRAW PER GROUP: where each group's instances start (prefix sums), and the draw itself
 	uint32_t IndirectCommandCount{ 0 };
-	for (size_t CurrentMeshIndex{ 0 }; CurrentMeshIndex < MeshCount; ++CurrentMeshIndex)
+	for (const uint32_t CurrentGroupInstanceCount : m_VisibleInstanceCountPerMesh)
 	{
-		IndirectCommandCount += m_VisibleInstanceCountPerMesh[CurrentMeshIndex] > 0 ? 1 : 0;
+		IndirectCommandCount += CurrentGroupInstanceCount > 0 ? 1 : 0;
 	}
 	const uint32_t VisibleInstanceCount = static_cast<uint32_t>(m_VisibleInstanceIndices.size());
 	ensureFrameBufferCapacity(FrameToFill, VisibleInstanceCount, IndirectCommandCount);
 
 	auto* IndirectCommands = static_cast<VkDrawIndexedIndirectCommand*>(FrameToFill.m_IndirectCommandBuffer.m_MappedData);
-	m_InstanceWriteCursorPerMesh.resize(MeshCount);
-	uint32_t FirstInstanceOfCurrentMesh{ 0 };
+	m_InstanceWriteCursorPerMesh.resize(GroupCount);
+	FrameDrawCommandCounts CommandCounts{};
+	uint32_t FirstInstanceOfCurrentGroup{ 0 };
 	uint32_t WrittenCommandCount{ 0 };
-	for (size_t CurrentMeshIndex{ 0 }; CurrentMeshIndex < MeshCount; ++CurrentMeshIndex)
+	for (size_t CurrentGroupIndex{ 0 }; CurrentGroupIndex < GroupCount; ++CurrentGroupIndex)
 	{
-		const uint32_t MeshInstanceCount = m_VisibleInstanceCountPerMesh[CurrentMeshIndex];
-		m_InstanceWriteCursorPerMesh[CurrentMeshIndex] = FirstInstanceOfCurrentMesh;
-		if (MeshInstanceCount == 0)
+		const uint32_t GroupInstanceCount = m_VisibleInstanceCountPerMesh[CurrentGroupIndex];
+		m_InstanceWriteCursorPerMesh[CurrentGroupIndex] = FirstInstanceOfCurrentGroup;
+		if (GroupInstanceCount == 0)
 		{
 			continue;
 		}
 
-		const MeshAsset& CurrentMesh = m_Meshes[CurrentMeshIndex];
+		const MeshAsset& GroupMesh = m_Meshes[CurrentGroupIndex % MeshCount];
 		VkDrawIndexedIndirectCommand& CurrentCommand = IndirectCommands[WrittenCommandCount++];
-		CurrentCommand.indexCount = CurrentMesh.indexCount;
-		CurrentCommand.instanceCount = MeshInstanceCount;
-		CurrentCommand.firstIndex = CurrentMesh.firstIndex;
-		CurrentCommand.vertexOffset = CurrentMesh.vertexOffset;
-		CurrentCommand.firstInstance = FirstInstanceOfCurrentMesh;	// gl_InstanceIndex starts here: the shader reads the right slots
-		FirstInstanceOfCurrentMesh += MeshInstanceCount;
+		CurrentCommand.indexCount = GroupMesh.indexCount;
+		CurrentCommand.instanceCount = GroupInstanceCount;
+		CurrentCommand.firstIndex = GroupMesh.firstIndex;
+		CurrentCommand.vertexOffset = GroupMesh.vertexOffset;
+		CurrentCommand.firstInstance = FirstInstanceOfCurrentGroup;	// gl_InstanceIndex starts here: the shader reads the right slots
+		FirstInstanceOfCurrentGroup += GroupInstanceCount;
+
+		const size_t GroupPipelineIndex = CurrentGroupIndex / MeshCount;
+		uint32_t& PipelineCommandCount = GroupPipelineIndex == 0 ? CommandCounts.m_OpaqueCommandCount
+			: GroupPipelineIndex == 1 ? CommandCounts.m_AlphaCutoutCommandCount : CommandCounts.m_AdditiveCommandCount;
+		++PipelineCommandCount;
 	}
 
-	// 3. EVERY VISIBLE INSTANCE INTO ITS MESH'S RANGE (written straight into mapped GPU memory, no intermediate copy)
+	// 3. EVERY VISIBLE INSTANCE INTO ITS GROUP'S RANGE (written straight into mapped GPU memory, no intermediate copy)
 	auto* GpuInstances = static_cast<Rendering::GpuInstanceData*>(FrameToFill.m_InstanceBuffer.m_MappedData);
 	for (const uint32_t CurrentVisibleInstanceIndex : m_VisibleInstanceIndices)
 	{
 		const RenderInstance& SourceInstance = SubmittedInstances[CurrentVisibleInstanceIndex];
-		Rendering::GpuInstanceData& DestinationInstance = GpuInstances[m_InstanceWriteCursorPerMesh[SourceInstance.meshID]++];
+		Rendering::GpuInstanceData& DestinationInstance = GpuInstances[m_InstanceWriteCursorPerMesh[getGroupOfInstance(SourceInstance)]++];
 		DestinationInstance.m_ModelMatrix = SourceInstance.transform;
 		DestinationInstance.m_TextureCoordinateRect = SourceInstance.m_TextureCoordinateRect;
 		DestinationInstance.m_Tint = SourceInstance.m_Tint;
 		DestinationInstance.m_TextureIndex = SourceInstance.textureID;
+		DestinationInstance.m_Flags = SourceInstance.m_Flags;
+		DestinationInstance.m_PivotOffset = SourceInstance.m_PivotOffset;
 	}
 
 	m_GpuMemory.flushBufferWrites(FrameToFill.m_InstanceBuffer, 0, sizeof(Rendering::GpuInstanceData) * std::max<VkDeviceSize>(VisibleInstanceCount, 1));
@@ -117,7 +147,7 @@ uint32_t Vulkanised::VulkanRenderer::prepareFrameInstances(Rendering::FrameResou
 	m_FrameStatistics.m_CulledInstanceCount = CulledInstanceCount;
 	m_FrameStatistics.m_DrawnInstanceCount = VisibleInstanceCount;
 	m_FrameStatistics.m_DrawCallCount = IndirectCommandCount;
-	return IndirectCommandCount;
+	return CommandCounts;
 }
 
 void Vulkanised::VulkanRenderer::ensureFrameBufferCapacity(Rendering::FrameResources& FrameToGrow, uint32_t RequiredInstanceCount, uint32_t RequiredIndirectCommandCount)

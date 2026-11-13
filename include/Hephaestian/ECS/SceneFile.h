@@ -2,6 +2,7 @@
 #define HEPHAESTIAN_SCENEFILE_H
 
 #include <array>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
@@ -16,7 +17,8 @@
 *	{
 *	  "assets": {
 *	    "models":   { "Quarry": "Models/laz_mesh.obj" },		<- name: path relative to assets/
-*	    "textures": { "Logo": "resources/Hephaestos.png" }
+*	    "textures": { "Logo": "resources/Hephaestos.png" },
+*	    "spriteSheets": { "Slime": "Sprites/Slime.spritesheet.json" }
 *	  },
 *	  "clearColour": [0.1, 0.1, 0.1],							<- optional: overrides HephaestianSettings while this scene is loaded
 *	  "lightPosition": [20, 40, 15],							<- optional, same
@@ -25,7 +27,9 @@
 *	    { "id": "Player", "position": [0, 1.7, 3], "freeFlyController": { "movementSpeed": 12 } },
 *	    { "id": "PlayerCamera", "parent": "Player", "camera": {} },
 *	    { "id": "Box", "primitive": "cube", "texture": "Logo", "rotationInDegrees": [0, 45, 0],
-*	      "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 } }
+*	      "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 } },
+*	    { "id": "Slime", "position": [2, 0, 0], "sprite": { "sheet": "Slime", "billboard": "faceCameraUpright" },
+*	      "spriteAnimation": { "clip": "hop" } }
 *	  ],
 *	  "activeCamera": "PlayerCamera"
 *	}
@@ -39,6 +43,7 @@ struct SceneFileAssetTable
 {
 	std::map<std::string, std::string> m_ModelPathsByName;		// Sorted by name, so saved files stay stable and diff nicely
 	std::map<std::string, std::string> m_TexturePathsByName;
+	std::map<std::string, std::string> m_SpriteSheetPathsByName;	// .spritesheet.json sidecars or Aseprite JSON exports
 };
 
 struct SceneFileCameraBlock
@@ -61,6 +66,27 @@ struct SceneFileConstantRotationBlock
 	float m_RotationSpeedInDegreesPerSecond{ 45.0f };
 };
 
+// Draws one frame of a sprite sheet from the asset table (see SpriteRendererComponent)
+struct SceneFileSpriteBlock
+{
+	std::string m_SpriteSheetAssetName;
+	std::uint32_t m_FrameIndex{ 0 };
+	std::array<float, 3> m_Tint{ 1.0f, 1.0f, 1.0f };
+	std::array<float, 2> m_Pivot{ 0.5f, 0.0f };				// (0.5, 0) = bottom centre
+	std::string m_BillboardModeName{ "none" };				// "none", "faceCamera" or "faceCameraUpright"
+	bool m_IsFlippedHorizontally{ false };
+	bool m_IsFlippedVertically{ false };
+	bool m_IsLit{ false };
+};
+
+// Plays one of the sprite sheet's clips on the entity's sprite
+struct SceneFileSpriteAnimationBlock
+{
+	std::string m_ClipName;
+	float m_PlaybackSpeed{ 1.0f };
+	bool m_IsPlaying{ true };
+};
+
 struct SceneFileEntity
 {
 	std::string m_SceneIdentifier;								// Unique within the scene
@@ -80,6 +106,8 @@ struct SceneFileEntity
 	std::optional<SceneFileCameraBlock> m_Camera;
 	std::optional<SceneFileFreeFlyControllerBlock> m_FreeFlyController;
 	std::optional<SceneFileConstantRotationBlock> m_ConstantRotation;
+	std::optional<SceneFileSpriteBlock> m_Sprite;
+	std::optional<SceneFileSpriteAnimationBlock> m_SpriteAnimation;
 };
 
 struct SceneFileContents
@@ -99,7 +127,7 @@ template <>
 struct glz::meta<Hephaestian::SceneFile::SceneFileAssetTable>
 {
 	using T = Hephaestian::SceneFile::SceneFileAssetTable;
-	static constexpr auto value = glz::object("models", &T::m_ModelPathsByName, "textures", &T::m_TexturePathsByName);
+	static constexpr auto value = glz::object("models", &T::m_ModelPathsByName, "textures", &T::m_TexturePathsByName, "spriteSheets", &T::m_SpriteSheetPathsByName);
 };
 
 template <>
@@ -130,6 +158,28 @@ struct glz::meta<Hephaestian::SceneFile::SceneFileConstantRotationBlock>
 };
 
 template <>
+struct glz::meta<Hephaestian::SceneFile::SceneFileSpriteBlock>
+{
+	using T = Hephaestian::SceneFile::SceneFileSpriteBlock;
+	static constexpr auto value = glz::object(
+		"sheet", &T::m_SpriteSheetAssetName,
+		"frame", &T::m_FrameIndex,
+		"tint", &T::m_Tint,
+		"pivot", &T::m_Pivot,
+		"billboard", &T::m_BillboardModeName,
+		"flipX", &T::m_IsFlippedHorizontally,
+		"flipY", &T::m_IsFlippedVertically,
+		"lit", &T::m_IsLit);
+};
+
+template <>
+struct glz::meta<Hephaestian::SceneFile::SceneFileSpriteAnimationBlock>
+{
+	using T = Hephaestian::SceneFile::SceneFileSpriteAnimationBlock;
+	static constexpr auto value = glz::object("clip", &T::m_ClipName, "speed", &T::m_PlaybackSpeed, "playing", &T::m_IsPlaying);
+};
+
+template <>
 struct glz::meta<Hephaestian::SceneFile::SceneFileEntity>
 {
 	using T = Hephaestian::SceneFile::SceneFileEntity;
@@ -146,7 +196,9 @@ struct glz::meta<Hephaestian::SceneFile::SceneFileEntity>
 		"visible", &T::m_IsVisible,
 		"camera", &T::m_Camera,
 		"freeFlyController", &T::m_FreeFlyController,
-		"constantRotation", &T::m_ConstantRotation);
+		"constantRotation", &T::m_ConstantRotation,
+		"sprite", &T::m_Sprite,
+		"spriteAnimation", &T::m_SpriteAnimation);
 };
 
 template <>

@@ -245,6 +245,8 @@ private:
 
 	// - Pipeline
 	VkPipeline m_GraphicsPipeline;
+	VkPipeline m_AlphaCutoutPipeline{ VK_NULL_HANDLE };	// Same shaders with the cutout discard compiled in, drawn two-sided
+	VkPipeline m_AdditivePipeline{ VK_NULL_HANDLE };		// Same shaders, added onto the image, no depth writes, drawn two-sided
 	VkPipelineLayout m_PipelineLayout;
 
 
@@ -290,11 +292,19 @@ private:
 	// The window's framebuffer no longer matches the swapchain (resized), checked every frame without any GLFW callback
 	[[nodiscard]] bool doesSwapchainNeedRecreation() const;
 
-	// - Record functions
-	void recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, uint32_t IndirectCommandCount);
+	// How many indirect commands each pipeline draws this frame (in this order in the indirect buffer: opaque, cutout, additive)
+	struct FrameDrawCommandCounts
+	{
+		uint32_t m_OpaqueCommandCount{ 0 };
+		uint32_t m_AlphaCutoutCommandCount{ 0 };
+		uint32_t m_AdditiveCommandCount{ 0 };
+	};
 
-	// Culling, grouping by mesh, instance data and indirect draws (src/Rendering/InstancePreparation.cpp)
-	uint32_t prepareFrameInstances(Rendering::FrameResources& FrameToFill, const std::vector<RenderInstance>& SubmittedInstances);
+	// - Record functions
+	void recordCommands(Rendering::FrameResources& FrameToRecord, uint32_t SwapchainImageIndex, const FrameDrawCommandCounts& DrawCommandCounts);
+
+	// Culling, grouping by pipeline and mesh, instance data and indirect draws (src/Rendering/InstancePreparation.cpp)
+	FrameDrawCommandCounts prepareFrameInstances(Rendering::FrameResources& FrameToFill, const std::vector<RenderInstance>& SubmittedInstances);
 	void ensureFrameBufferCapacity(Rendering::FrameResources& FrameToGrow, uint32_t RequiredInstanceCount, uint32_t RequiredIndirectCommandCount);
 	bool m_IsFrustumCullingEnabled{ true };
 	bool m_IsFrustumCullingFrozen{ false };
