@@ -1,3 +1,8 @@
+/**
+ * @file Scene.cpp
+ * @brief Entities, the hierarchy, the active camera, and the per-frame order of the systems. Scene files are in
+ * SceneSerialization.cpp.
+ */
 #include "Hephaestian/ECS/Scene.h"
 
 #include <string>

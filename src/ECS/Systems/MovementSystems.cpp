@@ -1,3 +1,7 @@
+/**
+ * @file MovementSystems.cpp
+ * @brief Free-fly controllers (WASD, mouse look, sprint) and constant rotations.
+ */
 #include "Hephaestian/ECS/Systems/MovementSystems.h"
 
 #include <cmath>
@@ -9,12 +13,19 @@ namespace Hephaestian::Systems
 
 namespace
 {
-	constexpr glm::vec3 c_WorldUpDirection{ 0.0f, 1.0f, 0.0f };
-	constexpr glm::vec3 c_UnrotatedForwardDirection{ 0.0f, 0.0f, -1.0f };
-	constexpr glm::vec3 c_UnrotatedRightDirection{ 1.0f, 0.0f, 0.0f };
+	constexpr glm::vec3 c_WorldUpDirection{ 0.0f, 1.0f, 0.0f };				///< Yaw turns around this
+	constexpr glm::vec3 c_UnrotatedForwardDirection{ 0.0f, 0.0f, -1.0f };	///< Where an unrotated entity looks
+	constexpr glm::vec3 c_UnrotatedRightDirection{ 1.0f, 0.0f, 0.0f };		///< Pitch turns around this (once yawed)
 
-	// Reads yaw and pitch back out of whatever rotation the entity currently has. Doing this every frame (rather than storing
-	// the angles in the component) means the controller never fights anyone else who sets the rotation, e.g. spawn code.
+	/**
+	 * @brief Reads yaw and pitch back out of whatever rotation the entity currently has.
+	 *
+	 * Doing this every frame (rather than storing the angles in the component) means the controller never fights anyone
+	 * else who sets the rotation, e.g. spawn code.
+	 * @param Rotation The entity's rotation.
+	 * @param[out] OutYawAngleInRadians Turn around world up (0 = looking down -Z).
+	 * @param[out] OutPitchAngleInRadians Up or down (positive = up).
+	 */
 	void extractYawAndPitchFromRotation(const glm::quat& Rotation, float& OutYawAngleInRadians, float& OutPitchAngleInRadians) noexcept
 	{
 		const glm::vec3 ForwardDirection = Rotation * c_UnrotatedForwardDirection;
@@ -22,6 +33,12 @@ namespace
 		OutPitchAngleInRadians = std::asin(glm::clamp(ForwardDirection.y, -1.0f, 1.0f));
 	}
 
+	/**
+	 * @brief Builds a rotation with no roll.
+	 * @param YawAngleInRadians Turn around world up.
+	 * @param PitchAngleInRadians Up or down, around the yawed right axis.
+	 * @return The rotation.
+	 */
 	[[nodiscard]] glm::quat buildRotationFromYawAndPitch(float YawAngleInRadians, float PitchAngleInRadians) noexcept
 	{
 		// Yaw around the world up axis first, then pitch around the (already yawed) local right axis. No roll, ever.

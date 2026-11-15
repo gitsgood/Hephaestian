@@ -112,3 +112,6 @@ CMakePresets.json
 
 # Log files probably shouldn't be tracked
 *.log
+# Generated documentation (run doxygen from the repository root to rebuild it)
+docs/html/
+docs/doxygen-warnings.log

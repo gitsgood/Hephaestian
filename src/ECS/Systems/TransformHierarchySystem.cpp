@@ -1,3 +1,7 @@
+/**
+ * @file TransformHierarchySystem.cpp
+ * @brief Resolving world transforms through the parent chain, each entity once per frame.
+ */
 #include "Hephaestian/ECS/Systems/TransformHierarchySystem.h"
 
 #include <Vulkanised/Logger.h>
@@ -9,11 +13,19 @@ namespace Hephaestian::Systems
 
 namespace
 {
-	// Scene::attachEntityToParent already refuses cycles, this is only the last line of defence against a hand-made one
+	/// Scene::attachEntityToParent already refuses cycles, this is only the last line of defence against a hand-made one
 	constexpr std::uint32_t c_MaximumHierarchyDepthBeforeAssumingACycle{ 256 };
 
-	// Resolves one entity's world matrix, resolving its parents first if they haven't been this frame.
-	// Parents are visited at most once per frame thanks to m_FrameNumberOfLastUpdate, so the whole pass stays O(entities).
+	/**
+	 * @brief Resolves one entity's world matrix, resolving its parents first if they haven't been this frame.
+	 *
+	 * Parents are visited at most once per frame thanks to m_FrameNumberOfLastUpdate, so the whole pass stays O(entities).
+	 * @param Registry The scene's entities.
+	 * @param EntityToResolve The entity (it has a TransformComponent and a WorldTransformComponent).
+	 * @param CurrentFrameNumber This pass's number.
+	 * @param CurrentHierarchyDepth How many parents deep this call is (past the limit, it's treated as a cycle).
+	 * @return The entity's world matrix, now up to date.
+	 */
 	const glm::mat4& resolveWorldTransformOfEntity(entt::registry& Registry, entt::entity EntityToResolve, std::uint64_t CurrentFrameNumber, std::uint32_t CurrentHierarchyDepth)
 	{
 		auto& WorldTransformOfEntity = Registry.get<Components::WorldTransformComponent>(EntityToResolve);

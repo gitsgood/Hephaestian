@@ -1,3 +1,7 @@
+/**
+ * @file AudioDecoder.cpp
+ * @brief The four AudioDecoder implementations (MP3, WAV, FLAC, Ogg Vorbis) and picking one by extension.
+ */
 #include "Hephaestian/Audio/AudioDecoder.h"
 
 #include <algorithm>
@@ -18,10 +22,17 @@ namespace Hephaestian::Audio
 
 namespace
 {
-	// - MP3 (dr_mp3)
+	/**
+	 * @brief MP3, with dr_mp3. Its duration is estimated from the file size (counting frames means reading the whole file).
+	 */
 	class Mp3Decoder final : public AudioDecoder
 	{
 	public:
+		/**
+		 * @brief Opens the file and reads its channel count and sample rate.
+		 * @param AudioFilePath The .mp3 file (any path Windows allows: opened with the wide character API).
+		 * @return False if it isn't a readable MP3.
+		 */
 		bool open(const std::filesystem::path& AudioFilePath)
 		{
 #if defined(_WIN32)
@@ -58,15 +69,22 @@ namespace
 		bool rewindToStart() override { return drmp3_seek_to_pcm_frame(&m_Mp3, 0) == DRMP3_TRUE; }
 
 	private:
-		drmp3 m_Mp3{};
-		bool m_IsOpen{ false };
-		std::uintmax_t m_FileSizeInBytes{ 0 };
+		drmp3 m_Mp3{};							///< dr_mp3's decoder state
+		bool m_IsOpen{ false };					///< Whether m_Mp3 needs closing
+		std::uintmax_t m_FileSizeInBytes{ 0 };	///< For estimateDurationInSeconds
 	};
 
-	// - WAV (dr_wav)
+	/**
+	 * @brief WAV, with dr_wav (exact duration from the header).
+	 */
 	class WavDecoder final : public AudioDecoder
 	{
 	public:
+		/**
+		 * @brief Opens the file and reads its channel count and sample rate.
+		 * @param AudioFilePath The .wav file.
+		 * @return False if it isn't a readable WAV.
+		 */
 		bool open(const std::filesystem::path& AudioFilePath)
 		{
 #if defined(_WIN32)
@@ -99,14 +117,21 @@ namespace
 		bool rewindToStart() override { return drwav_seek_to_pcm_frame(&m_Wav, 0) == DRWAV_TRUE; }
 
 	private:
-		drwav m_Wav{};
-		bool m_IsOpen{ false };
+		drwav m_Wav{};			///< dr_wav's decoder state
+		bool m_IsOpen{ false };	///< Whether m_Wav needs closing
 	};
 
-	// - FLAC (dr_flac)
+	/**
+	 * @brief FLAC, with dr_flac (exact duration from the stream info).
+	 */
 	class FlacDecoder final : public AudioDecoder
 	{
 	public:
+		/**
+		 * @brief Opens the file and reads its channel count and sample rate.
+		 * @param AudioFilePath The .flac file.
+		 * @return False if it isn't a readable FLAC.
+		 */
 		bool open(const std::filesystem::path& AudioFilePath)
 		{
 #if defined(_WIN32)
@@ -136,13 +161,20 @@ namespace
 		bool rewindToStart() override { return drflac_seek_to_pcm_frame(m_Flac, 0) == DRFLAC_TRUE; }
 
 	private:
-		drflac* m_Flac{ nullptr };
+		drflac* m_Flac{ nullptr };	///< dr_flac's decoder (null if not open)
 	};
 
-	// - Ogg Vorbis (stb_vorbis)
+	/**
+	 * @brief Ogg Vorbis, with stb_vorbis (exact duration from the stream).
+	 */
 	class VorbisDecoder final : public AudioDecoder
 	{
 	public:
+		/**
+		 * @brief Opens the file and reads its channel count and sample rate.
+		 * @param AudioFilePath The .ogg file (opened as a FILE by us, so wide Windows paths work).
+		 * @return False if it isn't a readable Ogg Vorbis file.
+		 */
 		bool open(const std::filesystem::path& AudioFilePath)
 		{
 			// stb_vorbis only takes narrow file names: opening the FILE ourselves keeps any Windows path working
@@ -202,9 +234,15 @@ namespace
 		bool rewindToStart() override { return stb_vorbis_seek_start(m_Vorbis) != 0; }
 
 	private:
-		stb_vorbis* m_Vorbis{ nullptr };
+		stb_vorbis* m_Vorbis{ nullptr };	///< stb_vorbis's decoder (null if not open; closes the file itself)
 	};
 
+	/**
+	 * @brief Makes a decoder of one type and opens the file with it.
+	 * @tparam DecoderType One of the decoders above.
+	 * @param AudioFilePath The file to open.
+	 * @return The opened decoder, or nullptr if it couldn't open the file.
+	 */
 	template <typename DecoderType>
 	[[nodiscard]] std::unique_ptr<AudioDecoder> openWith(const std::filesystem::path& AudioFilePath)
 	{

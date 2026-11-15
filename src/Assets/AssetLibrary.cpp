@@ -1,3 +1,7 @@
+/**
+ * @file AssetLibrary.cpp
+ * @brief Asset caches, primitive geometry, parallel sprite sheet loading, and freeing assets on scene switches.
+ */
 #include "Hephaestian/Assets/AssetLibrary.h"
 
 #include <algorithm>
@@ -18,8 +22,13 @@ namespace Hephaestian::Assets
 
 namespace
 {
-	constexpr std::array<std::string_view, static_cast<std::size_t>(PrimitiveShape::Count)> c_PrimitiveShapeNames{ "quad", "cube", "sphere", "sprite" };
+	constexpr std::array<std::string_view, static_cast<std::size_t>(PrimitiveShape::Count)> c_PrimitiveShapeNames{ "quad", "cube", "sphere", "sprite" };	///< Indexed by PrimitiveShape
 
+	/**
+	 * @brief Resolves an asset path the way every cache keys it.
+	 * @param AssetRelativePath Relative to the runtime assets folder (an absolute path is kept as it is).
+	 * @return The absolute path, canonical where possible (so "a/../b" and "b" are the same asset).
+	 */
 	[[nodiscard]] std::filesystem::path convertToAbsoluteAssetPath(const std::filesystem::path& AssetRelativePath)
 	{
 		const std::filesystem::path AbsoluteAssetPath = AssetRelativePath.is_absolute() ? AssetRelativePath : Vulkanised::Utilities::File::getRuntimeAssetsDirectory() / AssetRelativePath;
@@ -28,8 +37,14 @@ namespace
 		return CanonicalisationError ? AbsoluteAssetPath : CanonicalAssetPath;
 	}
 
-	// The pipeline hides back faces, so every triangle has to wind counter-clockwise seen from outside. Rather than trusting
-	// the hand-written corner orders, each triangle is checked against the direction it should face and flipped if needed.
+	/**
+	 * @brief Makes every triangle wind counter-clockwise seen from outside (the pipeline hides back faces).
+	 *
+	 * Rather than trusting the hand-written corner orders, each triangle is checked against the direction its vertex
+	 * normals say it should face, and flipped if needed.
+	 * @param Vertices The vertices (their normals give the intended facing).
+	 * @param TriangleIndices Three per triangle, reordered in place where needed.
+	 */
 	void makeTrianglesFaceOutwards(const std::vector<Vulkanised::Vertex>& Vertices, std::vector<std::uint32_t>& TriangleIndices)
 	{
 		for (std::size_t CurrentTriangleStart{ 0 }; CurrentTriangleStart + 2 < TriangleIndices.size(); CurrentTriangleStart += 3)
@@ -46,7 +61,15 @@ namespace
 		}
 	}
 
-	// One flat 1 x 1 face: its centre, the direction it faces, and the two directions across it (texture right and up)
+	/**
+	 * @brief Adds one flat 1 x 1 face (4 vertices, 2 triangles) with the whole texture across it.
+	 * @param Vertices Where the vertices are added.
+	 * @param TriangleIndices Where the triangles are added.
+	 * @param FaceCentre The face's centre.
+	 * @param FaceNormal The direction it faces.
+	 * @param FaceRightDirection Across the face: the texture's right.
+	 * @param FaceUpDirection Across the face: the texture's up.
+	 */
 	void appendSquareFace(std::vector<Vulkanised::Vertex>& Vertices, std::vector<std::uint32_t>& TriangleIndices,
 		const glm::vec3& FaceCentre, const glm::vec3& FaceNormal, const glm::vec3& FaceRightDirection, const glm::vec3& FaceUpDirection)
 	{
@@ -62,6 +85,12 @@ namespace
 		TriangleIndices.insert(TriangleIndices.end(), { FirstVertexIndex, FirstVertexIndex + 1, FirstVertexIndex + 2, FirstVertexIndex, FirstVertexIndex + 2, FirstVertexIndex + 3 });
 	}
 
+	/**
+	 * @brief Builds a primitive's geometry (see PrimitiveShape for each one's size and orientation).
+	 * @param Shape The shape.
+	 * @param[out] OutVertices Its vertices (white, with normals and texture coordinates).
+	 * @param[out] OutTriangleIndices Its triangles, all facing outwards.
+	 */
 	void buildPrimitiveGeometry(PrimitiveShape Shape, std::vector<Vulkanised::Vertex>& OutVertices, std::vector<std::uint32_t>& OutTriangleIndices)
 	{
 		constexpr glm::vec3 c_PositiveX{ 1.0f, 0.0f, 0.0f };

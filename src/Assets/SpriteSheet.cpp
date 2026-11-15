@@ -1,3 +1,7 @@
+/**
+ * @file SpriteSheet.cpp
+ * @brief Reading sprite sheet files (sidecars and Aseprite exports) into frames and clips, and decoding pages.
+ */
 #include "Hephaestian/Assets/SpriteSheet.h"
 
 #include <algorithm>
@@ -14,58 +18,112 @@
 
 #include <Vulkanised/Logger.h>
 
-// THE TWO FILE FORMATS, as plain structs glaze reads straight into
+/**
+ * @brief The two sprite sheet file formats, as plain structs glaze reads straight into (key names are in the glz::meta
+ * specialisations below them).
+ */
 namespace Hephaestian::Assets::SpriteSheetFileFormat
 {
 	// - Our sidecar (.spritesheet.json)
+	/**
+	 * @brief The sidecar's "grid": how each page is cut into equal frames.
+	 */
 	struct GridBlock
 	{
-		std::uint32_t m_FrameWidthInPixels{ 0 };	// 0 = worked out from the columns
-		std::uint32_t m_FrameHeightInPixels{ 0 };	// 0 = worked out from the rows
-		std::uint32_t m_ColumnCount{ 0 };			// 0 = as many as fit
-		std::uint32_t m_RowCount{ 0 };
-		std::uint32_t m_FrameCount{ 0 };			// 0 = every cell (a last row that isn't full needs this)
-		std::uint32_t m_MarginInPixels{ 0 };		// Empty border around the whole grid
-		std::uint32_t m_SpacingInPixels{ 0 };		// Empty gap between cells
+		std::uint32_t m_FrameWidthInPixels{ 0 };	///< "frameWidth". 0 = worked out from the columns
+		std::uint32_t m_FrameHeightInPixels{ 0 };	///< "frameHeight". 0 = worked out from the rows
+		std::uint32_t m_ColumnCount{ 0 };			///< "columns". 0 = as many as fit
+		std::uint32_t m_RowCount{ 0 };				///< "rows". 0 = as many as fit
+		std::uint32_t m_FrameCount{ 0 };			///< "frameCount", over every page. 0 = every cell (a last row that isn't full needs this)
+		std::uint32_t m_MarginInPixels{ 0 };		///< "margin": empty border around the whole grid
+		std::uint32_t m_SpacingInPixels{ 0 };		///< "spacing": empty gap between cells
 	};
 
+	/**
+	 * @brief One of the sidecar's "clips".
+	 */
 	struct ClipBlock
 	{
-		std::string m_ClipName;
-		std::vector<std::uint32_t> m_FrameIndices;
-		std::optional<std::array<std::uint32_t, 2>> m_FrameRange;	// [first, last], both included
-		float m_FramesPerSecond{ 10.0f };
-		std::string m_PlaybackName{ "loop" };
+		std::string m_ClipName;						///< "name"
+		std::vector<std::uint32_t> m_FrameIndices;	///< "frames", in playing order
+		std::optional<std::array<std::uint32_t, 2>> m_FrameRange;	///< "range": [first, last], both included (backwards if first > last)
+		float m_FramesPerSecond{ 10.0f };			///< "framesPerSecond"
+		std::string m_PlaybackName{ "loop" };		///< "playback": "loop", "pingPong" or "once"
 	};
 
+	/**
+	 * @brief A whole .spritesheet.json sidecar.
+	 */
 	struct SidecarFile
 	{
-		std::optional<std::string> m_ImageRelativePath;
-		std::vector<std::string> m_PageImageRelativePaths;			// Several pages, in order
-		std::optional<std::string> m_PageImageFolderRelativePath;	// Every image in a folder
-		std::optional<std::string> m_AsepriteRelativePath;
-		std::optional<GridBlock> m_Grid;
-		std::optional<std::array<float, 3>> m_TransparentColour;
-		float m_TransparentColourTolerance{ 0.1f };
-		std::string m_FilteringName{ "pixelated" };
-		std::string m_BlendingName{ "cutout" };
-		bool m_ShouldGenerateMipmaps{ false };
-		float m_PixelsPerUnit{ 32.0f };
-		std::vector<ClipBlock> m_Clips;
+		std::optional<std::string> m_ImageRelativePath;				///< "image": one page
+		std::vector<std::string> m_PageImageRelativePaths;			///< "images": several pages, in order
+		std::optional<std::string> m_PageImageFolderRelativePath;	///< "imageFolder": every image in a folder
+		std::optional<std::string> m_AsepriteRelativePath;			///< "aseprite": frames and tags from an Aseprite export
+		std::optional<GridBlock> m_Grid;							///< "grid"
+		std::optional<std::array<float, 3>> m_TransparentColour;	///< "transparentColour", sRGB 0 to 1
+		float m_TransparentColourTolerance{ 0.1f };					///< "transparentColourTolerance"
+		std::string m_FilteringName{ "pixelated" };					///< "filtering": "pixelated" or "smooth"
+		std::string m_BlendingName{ "cutout" };						///< "blending": "cutout" or "additive"
+		bool m_ShouldGenerateMipmaps{ false };						///< "mipmaps"
+		float m_PixelsPerUnit{ 32.0f };								///< "pixelsPerUnit"
+		std::vector<ClipBlock> m_Clips;								///< "clips"
 	};
 
 	// - Aseprite's JSON export (only the parts we use)
-	struct AsepriteRectangle { int m_X{ 0 }; int m_Y{ 0 }; int m_Width{ 0 }; int m_Height{ 0 }; };
-	struct AsepriteSize { int m_Width{ 0 }; int m_Height{ 0 }; };
-	struct AsepriteFrame { std::string m_FileName; AsepriteRectangle m_FrameRectangle; int m_DurationInMilliseconds{ 100 }; };
-	struct AsepriteFrameTag { std::string m_TagName; int m_FirstFrame{ 0 }; int m_LastFrame{ 0 }; std::string m_Direction{ "forward" }; };
-	struct AsepriteMeta { std::string m_ImageRelativePath; AsepriteSize m_ImageSize; std::vector<AsepriteFrameTag> m_FrameTags; };
-	struct AsepriteFileWithFrameArray { std::vector<AsepriteFrame> m_Frames; AsepriteMeta m_Meta; };				// "Array" export
-	struct AsepriteFileWithFrameMap { std::map<std::string, AsepriteFrame> m_FramesByName; AsepriteMeta m_Meta; };	// "Hash" export
+	/** @brief A frame's rectangle in the image ("frame": x, y, w, h). */
+	struct AsepriteRectangle
+	{
+		int m_X{ 0 };		///< Left edge, in pixels
+		int m_Y{ 0 };		///< Top edge, in pixels
+		int m_Width{ 0 };	///< In pixels
+		int m_Height{ 0 };	///< In pixels
+	};
+	/** @brief The image's size ("meta.size": w, h). */
+	struct AsepriteSize
+	{
+		int m_Width{ 0 };	///< In pixels
+		int m_Height{ 0 };	///< In pixels
+	};
+	/** @brief One exported frame. */
+	struct AsepriteFrame
+	{
+		std::string m_FileName;						///< "filename" (the "Hash" export's key, kept for ordering)
+		AsepriteRectangle m_FrameRectangle;			///< "frame"
+		int m_DurationInMilliseconds{ 100 };		///< "duration"
+	};
+	/** @brief A tag, which becomes a clip. */
+	struct AsepriteFrameTag
+	{
+		std::string m_TagName;					///< "name"
+		int m_FirstFrame{ 0 };					///< "from"
+		int m_LastFrame{ 0 };					///< "to"
+		std::string m_Direction{ "forward" };	///< "direction": forward, reverse, pingpong or pingpong_reverse
+	};
+	/** @brief The export's "meta" block. */
+	struct AsepriteMeta
+	{
+		std::string m_ImageRelativePath;			///< "image"
+		AsepriteSize m_ImageSize;					///< "size"
+		std::vector<AsepriteFrameTag> m_FrameTags;	///< "frameTags"
+	};
+	/** @brief An "Array" export: frames listed in order. */
+	struct AsepriteFileWithFrameArray
+	{
+		std::vector<AsepriteFrame> m_Frames;	///< "frames"
+		AsepriteMeta m_Meta;					///< "meta"
+	};
+	/** @brief A "Hash" export: frames keyed by file name (put back in frame order by readAsepriteFile). */
+	struct AsepriteFileWithFrameMap
+	{
+		std::map<std::string, AsepriteFrame> m_FramesByName;	///< "frames"
+		AsepriteMeta m_Meta;									///< "meta"
+	};
 }
 
 namespace SpriteSheetFormat = Hephaestian::Assets::SpriteSheetFileFormat;
 
+/// @cond GLAZE_META
 template <> struct glz::meta<SpriteSheetFormat::GridBlock>
 {
 	using T = SpriteSheetFormat::GridBlock;
@@ -120,17 +178,33 @@ template <> struct glz::meta<SpriteSheetFormat::AsepriteFileWithFrameMap>
 	using T = SpriteSheetFormat::AsepriteFileWithFrameMap;
 	static constexpr auto value = glz::object("frames", &T::m_FramesByName, "meta", &T::m_Meta);
 };
+/// @endcond
 
 namespace Hephaestian::Assets
 {
 
 namespace
 {
-	constexpr glz::opts c_LenientJsonOptions{ .error_on_unknown_keys = false };
+	constexpr glz::opts c_LenientJsonOptions{ .error_on_unknown_keys = false };	///< Unknown keys are skipped (Aseprite writes many we don't use)
 
-	enum class ClipPlayback { Loop, PingPong, Once };
+	/**
+	 * @brief How a clip plays ("playback" in a sidecar clip).
+	 */
+	enum class ClipPlayback
+	{
+		Loop,		///< Over and over
+		PingPong,	///< Forwards then backwards, over and over
+		Once		///< Through once, then holds the last frame
+	};
 
-	// Frames + one duration per frame -> the playback sequence (ping-pong unrolled), with cumulative step end times
+	/**
+	 * @brief Turns frames and their durations into a ready-to-play clip.
+	 * @param ClipName The clip's name.
+	 * @param FrameIndices The frames, in order.
+	 * @param FrameDurationsInSeconds How long each one shows (same length as FrameIndices).
+	 * @param Playback How it plays (ping-pong gets unrolled here: 0 1 2 3 2 1).
+	 * @return The clip, with its cumulative step end times.
+	 */
 	[[nodiscard]] SpriteAnimationClip buildAnimationClip(std::string ClipName, std::vector<std::uint32_t> FrameIndices, std::vector<float> FrameDurationsInSeconds, ClipPlayback Playback)
 	{
 		SpriteAnimationClip NewClip{};
@@ -158,6 +232,11 @@ namespace
 		return NewClip;
 	}
 
+	/**
+	 * @brief Reads a clip's "playback".
+	 * @param PlaybackName "loop", "pingPong" (or "pingpong") or "once".
+	 * @return The playback, or std::nullopt for anything else.
+	 */
 	[[nodiscard]] std::optional<ClipPlayback> parseClipPlaybackName(std::string_view PlaybackName)
 	{
 		if (PlaybackName == "loop") { return ClipPlayback::Loop; }
@@ -166,8 +245,14 @@ namespace
 		return std::nullopt;
 	}
 
-	// Aseprite's "Hash" export names frames "Slime 0.aseprite", "Slime 1.aseprite"... and a std::map sorts those as text
-	// (so "10" before "2"): the number in the name gives the real order back
+	/**
+	 * @brief The number a file or frame name ends with, ignoring its extension ("Slime 12.aseprite" gives 12).
+	 *
+	 * Aseprite's "Hash" export names frames "Slime 0.aseprite", "Slime 1.aseprite"... and a std::map sorts those as
+	 * text (so "10" before "2"): the number in the name gives the real order back. Page images are ordered the same way.
+	 * @param FrameName The name.
+	 * @return The number, or -1 if the name doesn't end with one.
+	 */
 	[[nodiscard]] long long getTrailingFrameNumber(const std::string& FrameName)
 	{
 		const std::size_t ExtensionStart = FrameName.find_last_of('.');
@@ -184,7 +269,11 @@ namespace
 		return std::stoll(std::string(NameWithoutExtension.substr(DigitsStart)));
 	}
 
-	// Tries both Aseprite layouts. Frames come out in Aseprite's frame order.
+	/**
+	 * @brief Reads an Aseprite JSON export, trying both layouts ("Array" then "Hash").
+	 * @param FileContents The file's text.
+	 * @return The frames, in Aseprite's frame order, and the meta block. std::nullopt if it's neither layout (or has no frames).
+	 */
 	[[nodiscard]] std::optional<std::pair<std::vector<SpriteSheetFormat::AsepriteFrame>, SpriteSheetFormat::AsepriteMeta>> readAsepriteFile(const std::string& FileContents)
 	{
 		SpriteSheetFormat::AsepriteFileWithFrameArray FileWithArray{};
@@ -208,8 +297,19 @@ namespace
 		return std::nullopt;
 	}
 
-	// Pixel rectangle -> texture coordinates. Pulled in a little from the edges, so filtering never picks up the
-	// neighbouring frame: a hair for pixelated sheets, half a pixel for smooth ones.
+	/**
+	 * @brief Turns a frame's pixel rectangle into texture coordinates.
+	 *
+	 * Pulled in a little from the edges, so filtering never picks up the neighbouring frame: a hair for pixelated
+	 * sheets, half a pixel for smooth ones.
+	 * @param X Left edge, in pixels.
+	 * @param Y Top edge, in pixels.
+	 * @param Width In pixels.
+	 * @param Height In pixels.
+	 * @param ImageSize The page's size, in pixels.
+	 * @param IsSmooth Whether the sheet uses smooth filtering.
+	 * @return (offset u, offset v, size u, size v).
+	 */
 	[[nodiscard]] glm::vec4 makeTextureCoordinateRect(float X, float Y, float Width, float Height, glm::vec2 ImageSize, bool IsSmooth)
 	{
 		const float EdgeInsetInPixels = IsSmooth ? 0.5f : 0.01f;
@@ -217,7 +317,12 @@ namespace
 			(Width - 2.0f * EdgeInsetInPixels) / ImageSize.x, (Height - 2.0f * EdgeInsetInPixels) / ImageSize.y };
 	}
 
-	// "imageFolder": every image in it, ordered by the number ending each name (so "frame_9" comes before "frame_10"), then by name
+	/**
+	 * @brief Lists the pages of an "imageFolder".
+	 * @param FolderPath The folder.
+	 * @return Every image in it (.png, .jpg, .jpeg, .bmp, .tga, .psd), ordered by the number ending each name (so
+	 * "frame_9" comes before "frame_10"), then by name.
+	 */
 	[[nodiscard]] std::vector<std::filesystem::path> listPageImagesInFolder(const std::filesystem::path& FolderPath)
 	{
 		constexpr std::array<std::string_view, 6> c_ImageFileExtensions{ ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".psd" };
@@ -241,7 +346,11 @@ namespace
 		return PageImageFilePaths;
 	}
 
-	// A folder given as the sprite sheet: the one sidecar inside it
+	/**
+	 * @brief Finds the sidecar of a folder given as the sprite sheet.
+	 * @param FolderPath The folder.
+	 * @return The one .spritesheet.json inside it, or std::nullopt (and logged) if there are none or several.
+	 */
 	[[nodiscard]] std::optional<std::filesystem::path> findSidecarInFolder(const std::filesystem::path& FolderPath)
 	{
 		std::vector<std::filesystem::path> SidecarFilePaths;
@@ -261,8 +370,16 @@ namespace
 		return SidecarFilePaths.front();
 	}
 
-	// An empty cell: nothing in it would show. Every pixel see-through, or black (images without transparency leave their
-	// unused cells black; a little noise from compression is tolerated).
+	/**
+	 * @brief Whether a cell is empty: nothing in it would show.
+	 *
+	 * Every pixel see-through (alpha under 128), or black (images without transparency leave their unused cells black;
+	 * a little noise from compression is tolerated: every channel 16 or less).
+	 * @param RgbaPixels The decoded page.
+	 * @param ImageWidth The page's width, in pixels.
+	 * @param PixelRectangle The cell: (x, y, width, height).
+	 * @return True if no pixel in it would show.
+	 */
 	[[nodiscard]] bool isPixelRectangleEmpty(const unsigned char* RgbaPixels, int ImageWidth, const glm::uvec4& PixelRectangle)
 	{
 		constexpr unsigned char c_HighestBlackChannelValue{ 16 };

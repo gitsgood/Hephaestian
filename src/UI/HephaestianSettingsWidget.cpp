@@ -1,3 +1,7 @@
+/**
+ * @file HephaestianSettingsWidget.cpp
+ * @brief The settings window's sections, and redirecting edits to the scene where it overrides a setting.
+ */
 #include "Hephaestian/UI/HephaestianSettingsWidget.h"
 
 #include <algorithm>
@@ -15,10 +19,14 @@ namespace Hephaestian::UI
 
 namespace
 {
-	constexpr const char* c_SceneOverrideLabelSuffix{ " (scene is overriding this, changes will apply to the scene)." };
-	constexpr float c_ControlWidthInPixels{ 260.0f };	// Colour pickers and position drags
+	constexpr const char* c_SceneOverrideLabelSuffix{ " (scene is overriding this, changes will apply to the scene)." };	///< Added to a control's label while the scene overrides it
+	constexpr float c_ControlWidthInPixels{ 260.0f };	///< Colour pickers and position drags
 
-	// "Main.scene.json" -> "Main": what the load button says
+	/**
+	 * @brief What a scene's load button says.
+	 * @param SceneFilePath The scene file.
+	 * @return Its name without ".json" and ".scene" ("Main.scene.json" -> "Main").
+	 */
 	[[nodiscard]] std::string makeSceneButtonLabel(const std::filesystem::path& SceneFilePath)
 	{
 		std::string SceneName = SceneFilePath.filename().string();
@@ -32,7 +40,14 @@ namespace
 		return SceneName;
 	}
 
-	enum class EnvironmentControlKind { ColourPicker, PositionDrag };
+	/**
+	 * @brief Which ImGui control an environment setting is edited with.
+	 */
+	enum class EnvironmentControlKind
+	{
+		ColourPicker,	///< RGB colour, 0 to 1
+		PositionDrag	///< x, y, z dragged with the mouse
+	};
 }
 
 HephaestianSettingsWidget::HephaestianSettingsWidget(HephaestianSettingsManager& SettingsManagerToEdit, Scene& SceneToManage, Assets::AssetLibrary& AssetLibraryForSceneLoading,

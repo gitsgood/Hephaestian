@@ -1,3 +1,7 @@
+/**
+ * @file RenderSystem.cpp
+ * @brief Model renderers to render instances, one per submesh.
+ */
 #include "Hephaestian/ECS/Systems/RenderSystem.h"
 
 #include "Hephaestian/ECS/Components.h"

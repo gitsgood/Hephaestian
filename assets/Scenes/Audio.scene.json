@@ -1,5 +1,7 @@
 {
    "assets": {
+      "models": {},
+      "textures": {},
       "spriteSheets": {
          "LaFemme": "Sprites/LaFemme"
       },
@@ -7,32 +9,138 @@
          "DivineCreature": "Audio/DivineCreature.mp3"
       }
    },
-   "clearColour": [0, 0, 0],
+   "clearColour": [
+      0,
+      0,
+      0
+   ],
    "entities": [
       {
          "id": "Player",
-         "position": [0, 1.6, 7],
-         "freeFlyController": {}
+         "position": [
+            0,
+            1.6,
+            7
+         ],
+         "rotationInDegrees": [
+            0,
+            0,
+            0
+         ],
+         "scale": [
+            1,
+            1,
+            1
+         ],
+         "freeFlyController": {
+            "movementSpeed": 3,
+            "sprintMultiplier": 3,
+            "mouseSensitivity": 0.0025
+         }
       },
       {
          "id": "PlayerCamera",
          "parent": "Player",
-         "camera": {}
+         "position": [
+            0,
+            0,
+            0
+         ],
+         "rotationInDegrees": [
+            0,
+            0,
+            0
+         ],
+         "scale": [
+            1,
+            1,
+            1
+         ],
+         "camera": {
+            "verticalFieldOfViewInDegrees": 60,
+            "nearClippingPlane": 0.1,
+            "farClippingPlane": 1000
+         }
       },
       {
          "id": "LaFemme center of rotation",
-         "position": [0, 1.6, 7],
-         "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 }
+         "position": [
+            0,
+            1.6,
+            7
+         ],
+         "rotationInDegrees": [
+            -180,
+            84.7754,
+            -180
+         ],
+         "scale": [
+            1,
+            1,
+            1
+         ],
+         "constantRotation": {
+            "axis": [
+               0,
+               1,
+               0
+            ],
+            "degreesPerSecond": 30
+         }
       },
       {
          "id": "LaFemme",
          "name": "La Femme (sings in 3D: walk away and she fades out)",
          "parent": "LaFemme center of rotation",
-         "position": [10, 0, 0],
-         "scale": [3, 3, 3],
-         "sprite": { "sheet": "LaFemme", "billboard": "faceCamera" },
-         "spriteAnimation": { "clip": "play" },
-         "audio": { "sound": "DivineCreature", "loop": true, "spatial": true, "minDistance": 3, "maxDistance": 30, "falloff": "linear" }
+         "position": [
+            10,
+            0,
+            0
+         ],
+         "rotationInDegrees": [
+            0,
+            0,
+            0
+         ],
+         "scale": [
+            3,
+            3,
+            3
+         ],
+         "sprite": {
+            "sheet": "LaFemme",
+            "frame": 303,
+            "tint": [
+               1,
+               1,
+               1
+            ],
+            "pivot": [
+               0.5,
+               0
+            ],
+            "billboard": "faceCamera",
+            "flipX": false,
+            "flipY": false,
+            "lit": false
+         },
+         "spriteAnimation": {
+            "clip": "play",
+            "speed": 1,
+            "playing": true
+         },
+         "audio": {
+            "sound": "DivineCreature",
+            "volume": 1,
+            "pitch": 1,
+            "loop": true,
+            "playOnStart": true,
+            "spatial": true,
+            "minDistance": 3,
+            "maxDistance": 30,
+            "rolloff": 1,
+            "falloff": "linear"
+         }
       }
    ],
    "activeCamera": "PlayerCamera"

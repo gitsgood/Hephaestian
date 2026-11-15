@@ -1,3 +1,7 @@
+/**
+ * @file InputManager.cpp
+ * @brief The GLFW callbacks behind InputManager, and the per-frame queries.
+ */
 #include "Hephaestian/Input/InputManager.h"
 
 #include <Vulkanised/Logger.h>

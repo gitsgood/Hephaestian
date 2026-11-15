@@ -1,3 +1,12 @@
+/**
+ * @file main.cpp
+ * @brief The program: window, renderer, settings, input, audio, assets, the scene, and the game loop.
+ *
+ * Command line:
+ * - `--scene <path>`: the scene to open at startup (relative to assets/), instead of HephaestianSettings' startupScene.
+ * - `--screenshot-and-exit <seconds> <file.bmp>`: render for that long, save one frame, log the frame statistics and
+ *   quit (automated checks).
+ */
 #include <Vulkanised/Logger.h>
 #include <Vulkanised/VulkanRenderer.h>
 
@@ -15,10 +24,19 @@
 
 #include <imgui.h>
 
-// Little trick I stole from Rust. Ideally this should be immutable and thread-safe, but at least it is supposed to be somehow thread-safe now. This might come in handy down the line.
+/// Little trick I stole from Rust. Ideally this should be immutable and thread-safe, but at least it is supposed to be somehow thread-safe now. This might come in handy down the line.
 Vulkanised::VAtomic<GLFWwindow> window;
-Vulkanised::VulkanRenderer renderer;
+Vulkanised::VulkanRenderer renderer;	///< The one renderer
 
+/**
+ * @brief Starts GLFW and opens the game window (no OpenGL context: Vulkan draws into it), with Hephaestian's icon.
+ *
+ * On Windows the icon is compiled into the exe (resources/Hephaestian.rc) and GLFW applies it itself; elsewhere it's
+ * loaded from assets/resources/Hephaestos.png. Throws if GLFW or the window can't be created.
+ * @param wName The window's title.
+ * @param width Its width, in screen pixels.
+ * @param height Its height, in screen pixels.
+ */
 static void initWindow(std::string_view wName = "Test Window", const int width = 800, const int height = 600)
 {
 	if (glfwInit() == GLFW_FALSE)
@@ -64,6 +82,15 @@ static void initWindow(std::string_view wName = "Test Window", const int width =
 	window = std::shared_ptr<GLFWwindow>(rawWindow, glfwDestroyWindow);
 }
 
+/**
+ * @brief Sets everything up, runs the game loop until the window closes, then shuts down.
+ *
+ * Each frame: input and settings hot reload, the ImGui settings window, application keys (mouse capture, F12
+ * screenshots), the simulation, audio, then the environment and rendering.
+ * @param ArgumentCount How many command line arguments there are (see the file description).
+ * @param Arguments The command line arguments.
+ * @return EXIT_SUCCESS, or EXIT_FAILURE if the renderer couldn't start.
+ */
 auto main(int ArgumentCount, char** Arguments) -> int
 {
 	using namespace Hephaestian;

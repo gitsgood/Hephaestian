@@ -1,3 +1,7 @@
+/**
+ * @file AudioEngine.cpp
+ * @brief OpenAL Soft setup, the voice pool, HRTF switching, the per-frame batch, and the streaming thread.
+ */
 #include "Hephaestian/Audio/AudioEngine.h"
 
 #include <algorithm>
@@ -19,24 +23,43 @@ namespace Hephaestian::Audio
 
 namespace
 {
-	constexpr std::uint32_t c_MaximumVoiceCount{ 256 };
-	constexpr std::uint32_t c_VoiceSlotBitCount{ 16 };
-	constexpr std::uint32_t c_VoiceSlotMask{ (1u << c_VoiceSlotBitCount) - 1 };
-	constexpr std::uint32_t c_VoiceReuseCountLimit{ 1u << 15 };	// Handles stay below 2^31
-	constexpr auto c_StreamingThreadInterval{ std::chrono::milliseconds(20) };
+	constexpr std::uint32_t c_MaximumVoiceCount{ 256 };	///< The voice pool never grows past this (fewer if the device mixes fewer)
+	constexpr std::uint32_t c_VoiceSlotBitCount{ 16 };	///< Low bits of a voice handle: the slot
+	constexpr std::uint32_t c_VoiceSlotMask{ (1u << c_VoiceSlotBitCount) - 1 };	///< Extracts the slot from a handle
+	constexpr std::uint32_t c_VoiceReuseCountLimit{ 1u << 15 };	///< Reuse counts wrap here, so handles stay below 2^31
+	constexpr auto c_StreamingThreadInterval{ std::chrono::milliseconds(20) };	///< How often the streaming thread checks its voices
 
+	/**
+	 * @brief The OpenAL sample format for 16-bit samples.
+	 * @param ChannelCount 1 or 2.
+	 * @return AL_FORMAT_MONO16 or AL_FORMAT_STEREO16.
+	 */
 	[[nodiscard]] ALenum getSixteenBitFormat(std::uint32_t ChannelCount) noexcept
 	{
 		return ChannelCount == 1 ? AL_FORMAT_MONO16 : AL_FORMAT_STEREO16;
 	}
 
+	/**
+	 * @brief Packs a voice slot and its reuse count into a handle.
+	 * @param VoiceSlot The voice's index in the pool.
+	 * @param ReuseCount How many times that voice has been freed.
+	 * @return The handle (offset by 1, so 0 stays "no voice").
+	 */
 	[[nodiscard]] VoiceHandle makeVoiceHandle(std::uint32_t VoiceSlot, std::uint32_t ReuseCount) noexcept
 	{
 		return { ((ReuseCount << c_VoiceSlotBitCount) | VoiceSlot) + 1 };
 	}
 
-	// The context/reset attributes for an HRTF mode (zero terminated). "On" also asks for stereo HRTF output, or a card set to
-	// 5.1/7.1 in Windows would keep its surround output and refuse HRTF ("output isn't stereo").
+	/**
+	 * @brief The context (or device reset) attributes for an HRTF mode.
+	 *
+	 * "On" also asks for stereo HRTF output, or a card set to 5.1/7.1 in Windows would keep its surround output and
+	 * refuse HRTF ("output isn't stereo").
+	 * @param Mode The HRTF mode.
+	 * @param IsHrtfExtensionSupported Whether ALC_SOFT_HRTF exists (no HRTF attribute otherwise).
+	 * @param IsOutputModeExtensionSupported Whether ALC_SOFT_output_mode exists (no stereo request otherwise).
+	 * @return The attribute list, zero terminated.
+	 */
 	[[nodiscard]] std::array<ALCint, 5> makeHrtfAttributes(HrtfMode Mode, bool IsHrtfExtensionSupported, bool IsOutputModeExtensionSupported) noexcept
 	{
 		std::array<ALCint, 5> Attributes{};
@@ -54,6 +77,11 @@ namespace
 		return Attributes;
 	}
 
+	/**
+	 * @brief Says why HRTF is on or off, in words.
+	 * @param HrtfStatus OpenAL Soft's ALC_HRTF_STATUS_SOFT value.
+	 * @return E.g. "on, headphones detected" or "off, output isn't stereo".
+	 */
 	[[nodiscard]] std::string_view describeHrtfStatus(ALCint HrtfStatus) noexcept
 	{
 		switch (HrtfStatus)

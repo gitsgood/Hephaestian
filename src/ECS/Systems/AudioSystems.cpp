@@ -1,3 +1,7 @@
+/**
+ * @file AudioSystems.cpp
+ * @brief Starting and following audio sources, and placing the listener.
+ */
 #include "Hephaestian/ECS/Systems/AudioSystems.h"
 
 namespace Hephaestian::Systems
@@ -5,6 +9,12 @@ namespace Hephaestian::Systems
 
 namespace
 {
+	/**
+	 * @brief Where an entity is in the world.
+	 * @param Registry The scene's entities.
+	 * @param Entity The entity.
+	 * @return The translation of its WorldTransformComponent, or the origin if it has none.
+	 */
 	[[nodiscard]] glm::vec3 getWorldPosition(const entt::registry& Registry, entt::entity Entity)
 	{
 		const auto* WorldTransform = Registry.try_get<Components::WorldTransformComponent>(Entity);

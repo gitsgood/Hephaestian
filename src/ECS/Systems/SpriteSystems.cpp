@@ -1,3 +1,7 @@
+/**
+ * @file SpriteSystems.cpp
+ * @brief Sprite animation, clip switching, and sprite render instances (frame, flips, pivot, blending, billboarding).
+ */
 #include "Hephaestian/ECS/Systems/SpriteSystems.h"
 
 #include <algorithm>

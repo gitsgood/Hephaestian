@@ -1,3 +1,11 @@
+/**
+ * @file Components.h
+ * @brief Every ECS component.
+ *
+ * Every component is plain data. All the logic lives in the systems (see ECS/Systems/).
+ *
+ * World conventions (same as GLM and the Vulkanised shaders): right-handed, +Y up, an unrotated entity looks down -Z.
+ */
 #ifndef HEPHAESTIAN_COMPONENTS_H
 #define HEPHAESTIAN_COMPONENTS_H
 
@@ -16,29 +24,35 @@
 
 #include "Hephaestian/Audio/AudioEngine.h"
 
-/*
-* Every component is plain data. All the logic lives in the systems (see ECS/Systems/).
-*
-* World conventions (same as GLM and the Vulkanised shaders): right-handed, +Y up, an unrotated entity looks down -Z.
-*/
 namespace Hephaestian::Assets { struct SpriteSheet; }
 
+/**
+ * @brief The ECS components: plain data, attached to entities in a Scene's registry.
+ */
 namespace Hephaestian::Components
 {
 
-// Purely for humans (debugging, logging, eventually an editor)
+/**
+ * @brief Purely for humans (debugging, logging, the editor, saved scenes).
+ */
 struct NameComponent
 {
-	std::string m_EntityName;
+	std::string m_EntityName;	///< Doesn't have to be unique
 };
 
-// Where the entity is, RELATIVE TO ITS PARENT (or to the world if it has no ParentEntityComponent)
+/**
+ * @brief Where the entity is, RELATIVE TO ITS PARENT (or to the world if it has no ParentEntityComponent).
+ */
 struct TransformComponent
 {
-	glm::vec3 m_LocalPosition{ 0.0f };
-	glm::quat m_LocalRotation{ 1.0f, 0.0f, 0.0f, 0.0f };	// Identity (w, x, y, z)
-	glm::vec3 m_LocalScale{ 1.0f };
+	glm::vec3 m_LocalPosition{ 0.0f };						///< Offset from the parent
+	glm::quat m_LocalRotation{ 1.0f, 0.0f, 0.0f, 0.0f };	///< Identity (w, x, y, z)
+	glm::vec3 m_LocalScale{ 1.0f };							///< Per axis
 
+	/**
+	 * @brief The local transform as a matrix.
+	 * @return Translate * Rotate * Scale, the usual order.
+	 */
 	[[nodiscard]] glm::mat4 calculateLocalTransformMatrix() const noexcept
 	{
 		// Translate * Rotate * Scale, the usual order
@@ -46,139 +60,181 @@ struct TransformComponent
 	}
 };
 
-// Where the entity ended up in the world, after its whole parent chain is applied.
-// Written by TransformHierarchySystem only, read by everyone else. Never write to it yourself, edit TransformComponent instead.
+/**
+ * @brief Where the entity ended up in the world, after its whole parent chain is applied.
+ *
+ * Written by the transform hierarchy system only (Systems::updateWorldTransformsFromHierarchy), read by everyone else.
+ * Never write to it yourself: edit TransformComponent instead.
+ */
 struct WorldTransformComponent
 {
-	glm::mat4 m_WorldTransformMatrix{ 1.0f };
-	std::uint64_t m_FrameNumberOfLastUpdate{ 0 };	// Lets the hierarchy system resolve every entity exactly once per frame, whatever the order
+	glm::mat4 m_WorldTransformMatrix{ 1.0f };		///< Model to world
+	std::uint64_t m_FrameNumberOfLastUpdate{ 0 };	///< Lets the hierarchy system resolve every entity exactly once per frame, whatever the order
 };
 
-// Makes this entity's TransformComponent relative to another entity. This is how a camera gets attached to anything:
-// give the camera entity a ParentEntityComponent pointing at the thing to follow, and its local transform becomes the offset.
-// Use Scene::attachEntityToParent rather than adding this directly, it refuses cycles.
+/**
+ * @brief Makes this entity's TransformComponent relative to another entity.
+ *
+ * This is how a camera gets attached to anything: give the camera entity a ParentEntityComponent pointing at the thing
+ * to follow, and its local transform becomes the offset. Use Scene::attachEntityToParent rather than adding this
+ * directly: it refuses cycles.
+ */
 struct ParentEntityComponent
 {
-	entt::entity m_ParentEntity{ entt::null };
+	entt::entity m_ParentEntity{ entt::null };	///< The entity this one follows
 };
 
-// Draws a (possibly multi-mesh) model created through VulkanRenderer::createModel / loadModel at this entity's world transform
+/**
+ * @brief Draws a (possibly multi-mesh) model created through VulkanRenderer::createModel / loadModel at this entity's
+ * world transform.
+ */
 struct ModelRendererComponent
 {
-	std::uint32_t m_ModelIdentifier{ 0 };
-	bool m_IsVisible{ true };
-	std::optional<std::uint32_t> m_TextureOverrideIdentifier;	// When set, every piece of the model uses this texture instead of its own
+	std::uint32_t m_ModelIdentifier{ 0 };						///< The renderer's model
+	bool m_IsVisible{ true };									///< Hidden while false
+	std::optional<std::uint32_t> m_TextureOverrideIdentifier;	///< When set, every piece of the model uses this texture instead of its own
 };
 
-// What a scene file said about this entity, so the scene can be written back out the same way ("Save scene").
-// Entities made in code don't need it: they get an id generated from their name when saved.
+/**
+ * @brief What a scene file said about this entity, so the scene can be written back out the same way ("Save scene").
+ *
+ * Entities made in code don't need it: they get an id generated from their name when saved.
+ */
 struct SceneSerializationComponent
 {
-	std::string m_SceneIdentifier;		// The entity's unique "id" in the scene file (parents and the active camera refer to it)
-	std::string m_ModelAssetName;		// Name in the scene's asset table, or empty
-	std::string m_PrimitiveShapeName;	// "quad", "cube", "sphere", or empty
-	std::string m_TextureAssetName;		// Texture override's name in the asset table, or empty
-	std::string m_SpriteSheetAssetName;	// Sprite sheet's name in the asset table, or empty
-	std::string m_SoundAssetName;		// Audio source's sound name in the asset table, or empty
+	std::string m_SceneIdentifier;		///< The entity's unique "id" in the scene file (parents and the active camera refer to it)
+	std::string m_ModelAssetName;		///< Name in the scene's asset table, or empty
+	std::string m_PrimitiveShapeName;	///< "quad", "cube", "sphere", or empty
+	std::string m_TextureAssetName;		///< Texture override's name in the asset table, or empty
+	std::string m_SpriteSheetAssetName;	///< Sprite sheet's name in the asset table, or empty
+	std::string m_SoundAssetName;		///< Audio source's sound name in the asset table, or empty
 };
 
-// Turns the entity into something that can be looked through. The entity's world transform IS the eye.
-// Which camera is actually used is decided by Scene::setActiveCameraEntity.
+/**
+ * @brief Turns the entity into something that can be looked through. The entity's world transform IS the eye.
+ *
+ * Which camera is actually used is decided by Scene::setActiveCameraEntity.
+ */
 struct CameraComponent
 {
-	float m_VerticalFieldOfViewInDegrees{ 60.0f };
-	float m_NearClippingPlaneDistance{ 0.1f };
-	float m_FarClippingPlaneDistance{ 1000.0f };
+	float m_VerticalFieldOfViewInDegrees{ 60.0f };	///< Top to bottom of the view
+	float m_NearClippingPlaneDistance{ 0.1f };		///< Nothing closer is drawn
+	float m_FarClippingPlaneDistance{ 1000.0f };	///< Nothing further is drawn
 };
 
-// Fly around with WASD + QE + mouse look. Put it on the camera entity for a free camera,
-// or on a "player" entity with the camera parented to it for a camera that follows that player around.
+/**
+ * @brief Fly around with WASD + QE + mouse look.
+ *
+ * Put it on the camera entity for a free camera, or on a "player" entity with the camera parented to it for a camera
+ * that follows that player around. Moved by Systems::updateFreeFlyMovementControllers.
+ */
 struct FreeFlyMovementControllerComponent
 {
-	float m_MovementSpeedInUnitsPerSecond{ 3.0f };
-	float m_SprintMovementSpeedMultiplier{ 3.0f };
-	float m_MouseLookSensitivityInRadiansPerPixel{ 0.0025f };
-	float m_MaximumPitchAngleInRadians{ glm::radians(89.0f) };	// Stops the camera flipping over when looking straight up or down
-	bool m_OnlyLookAroundWhileMouseCursorIsCaptured{ true };
+	float m_MovementSpeedInUnitsPerSecond{ 3.0f };				///< Walking speed
+	float m_SprintMovementSpeedMultiplier{ 3.0f };				///< Speed times this while the sprint key is held
+	float m_MouseLookSensitivityInRadiansPerPixel{ 0.0025f };	///< How far one pixel of mouse movement turns
+	float m_MaximumPitchAngleInRadians{ glm::radians(89.0f) };	///< Stops the camera flipping over when looking straight up or down
+	bool m_OnlyLookAroundWhileMouseCursorIsCaptured{ true };	///< Mouse look only while the cursor is captured (right click in the demo)
 
 	// Current orientation, kept as angles because rebuilding a quaternion from yaw/pitch never accumulates roll
-	float m_CurrentYawAngleInRadians{ 0.0f };	// Around world +Y
-	float m_CurrentPitchAngleInRadians{ 0.0f };	// Around local +X
+	/// Around world +Y. Not used at the moment: the system reads yaw and pitch back from the entity's rotation every frame.
+	float m_CurrentYawAngleInRadians{ 0.0f };
+	/// Around local +X. Not used at the moment: the system reads yaw and pitch back from the entity's rotation every frame.
+	float m_CurrentPitchAngleInRadians{ 0.0f };
 
 	// Key bindings (GLFW key codes), so different controllers can use different keys
-	int m_MoveForwardKey{ GLFW_KEY_W };
-	int m_MoveBackwardKey{ GLFW_KEY_S };
-	int m_MoveLeftKey{ GLFW_KEY_A };
-	int m_MoveRightKey{ GLFW_KEY_D };
-	int m_MoveUpKey{ GLFW_KEY_E };
-	int m_MoveDownKey{ GLFW_KEY_Q };
-	int m_SprintKey{ GLFW_KEY_LEFT_SHIFT };
+	int m_MoveForwardKey{ GLFW_KEY_W };			///< GLFW key code
+	int m_MoveBackwardKey{ GLFW_KEY_S };		///< GLFW key code
+	int m_MoveLeftKey{ GLFW_KEY_A };			///< GLFW key code
+	int m_MoveRightKey{ GLFW_KEY_D };			///< GLFW key code
+	int m_MoveUpKey{ GLFW_KEY_E };				///< GLFW key code (straight up, in world space)
+	int m_MoveDownKey{ GLFW_KEY_Q };			///< GLFW key code (straight down, in world space)
+	int m_SprintKey{ GLFW_KEY_LEFT_SHIFT };		///< GLFW key code
 };
 
-// Spins the entity forever. Mostly here for demo purposes (it replaces the hand-written rotation that used to live in main)
+/**
+ * @brief Spins the entity forever. Mostly here for demo purposes (it replaces the hand-written rotation that used to
+ * live in main).
+ */
 struct ConstantRotationComponent
 {
-	glm::vec3 m_RotationAxis{ 0.0f, 1.0f, 0.0f };
-	float m_RotationSpeedInDegreesPerSecond{ 45.0f };
+	glm::vec3 m_RotationAxis{ 0.0f, 1.0f, 0.0f };		///< In the entity's local space
+	float m_RotationSpeedInDegreesPerSecond{ 45.0f };	///< Negative spins the other way
 };
 
 
-// How a sprite turns towards the camera
+/**
+ * @brief How a sprite turns towards the camera.
+ */
 enum class SpriteBillboardMode
 {
-	None,				// Placed like any other object, by its transform (signs, decals, a flat 2D-style layer). Visible from both sides.
-	FaceCamera,			// Always fully facing the camera, whatever angle it's seen from (particles, effects, pickups)
-	FaceCameraUpright	// Turns towards the camera around the world's vertical axis only (characters, trees: they never tilt)
+	None,				///< Placed like any other object, by its transform (signs, decals, a flat 2D-style layer). Visible from both sides.
+	FaceCamera,			///< Always fully facing the camera, whatever angle it's seen from (particles, effects, pickups)
+	FaceCameraUpright	///< Turns towards the camera around the world's vertical axis only (characters, trees: they never tilt)
 };
 
-// Draws one frame of a sprite sheet as a quad at this entity's world transform. Its size is the frame's size in pixels
-// divided by the sheet's pixels per unit, times the transform's scale. Pixels under 50% alpha are cut out.
+/**
+ * @brief Draws one frame of a sprite sheet as a quad at this entity's world transform.
+ *
+ * Its size is the frame's size in pixels divided by the sheet's pixels per unit, times the transform's scale. How its
+ * pixels blend (cutout or additive) is the sheet's choice.
+ */
 struct SpriteRendererComponent
 {
-	std::shared_ptr<const Assets::SpriteSheet> m_SpriteSheet;	// From AssetLibrary::getOrLoadSpriteSheet, shared by every sprite using it
-	std::uint32_t m_FrameIndex{ 0 };							// Set by a SpriteAnimatorComponent, if there is one
-	glm::vec3 m_Tint{ 1.0f };									// Multiplies the image's colours (picked in sRGB, like every colour)
-	glm::vec2 m_Pivot{ 0.5f, 0.0f };							// The point of the frame sitting at the entity's position: (0.5, 0) = bottom centre (feet), (0.5, 0.5) = centre
-	SpriteBillboardMode m_BillboardMode{ SpriteBillboardMode::None };
-	bool m_IsFlippedHorizontally{ false };						// Mirrored left-right (a character walking the other way)
-	bool m_IsFlippedVertically{ false };
-	bool m_IsLit{ false };										// Off: shown exactly as drawn. On: lit like any other surface.
-	bool m_IsVisible{ true };
+	std::shared_ptr<const Assets::SpriteSheet> m_SpriteSheet;	///< From AssetLibrary::getOrLoadSpriteSheet, shared by every sprite using it
+	std::uint32_t m_FrameIndex{ 0 };							///< Set by a SpriteAnimatorComponent, if there is one
+	glm::vec3 m_Tint{ 1.0f };									///< Multiplies the image's colours (picked in sRGB, like every colour)
+	glm::vec2 m_Pivot{ 0.5f, 0.0f };							///< The point of the frame sitting at the entity's position: (0.5, 0) = bottom centre (feet), (0.5, 0.5) = centre
+	SpriteBillboardMode m_BillboardMode{ SpriteBillboardMode::None };	///< How it turns towards the camera
+	bool m_IsFlippedHorizontally{ false };						///< Mirrored left-right (a character walking the other way)
+	bool m_IsFlippedVertically{ false };						///< Mirrored top-bottom
+	bool m_IsLit{ false };										///< Off: shown exactly as drawn. On: lit like any other surface.
+	bool m_IsVisible{ true };									///< Hidden while false
 };
 
-// Plays the sprite sheet's animation clips on the SpriteRendererComponent of the same entity (it picks the frame)
+/**
+ * @brief Plays the sprite sheet's animation clips on the SpriteRendererComponent of the same entity (it picks the frame).
+ */
 struct SpriteAnimatorComponent
 {
-	std::uint32_t m_ClipIndex{ 0 };					// In the sprite sheet's clips (use Systems::playSpriteAnimationClip to change it by name)
-	float m_ElapsedTimeInSeconds{ 0.0f };			// Time into the clip
-	float m_PlaybackSpeed{ 1.0f };					// 2 = twice as fast, negative = backwards
-	bool m_IsPlaying{ true };
-	bool m_HasFinished{ false };					// A "once" clip reached its last frame
+	std::uint32_t m_ClipIndex{ 0 };				///< In the sprite sheet's clips (use Systems::playSpriteAnimationClip to change it by name)
+	float m_ElapsedTimeInSeconds{ 0.0f };		///< Time into the clip
+	float m_PlaybackSpeed{ 1.0f };				///< 2 = twice as fast, negative = backwards
+	bool m_IsPlaying{ true };					///< Paused while false (holds its frame)
+	bool m_HasFinished{ false };				///< A "once" clip reached its last frame
 };
 
-// Plays a sound from this entity: music (not spatial: the same in both ears, wherever you stand), or a sound placed in
-// the world at the entity's position (spatial: panned and faded with distance, it follows the entity as it moves).
-// Started by the audio system when m_ShouldPlayOnStart, or by Systems::playAudioSource. Destroying the entity stops it.
+/**
+ * @brief Plays a sound from this entity.
+ *
+ * Either music (not spatial: the same in both ears, wherever you stand), or a sound placed in the world at the
+ * entity's position (spatial: panned and faded with distance, it follows the entity as it moves).
+ * Started by the audio system when m_ShouldPlayOnStart, or by Systems::playAudioSource. Destroying the entity stops it.
+ */
 struct AudioSourceComponent
 {
-	std::shared_ptr<const Audio::SoundAsset> m_Sound;	// From AssetLibrary::getOrLoadSound
-	float m_Volume{ 1.0f };
-	float m_Pitch{ 1.0f };
-	bool m_ShouldLoop{ false };
-	bool m_ShouldPlayOnStart{ true };
-	bool m_IsSpatial{ false };
-	float m_MinimumDistance{ 1.0f };					// Spatial only: full volume up to here
-	float m_MaximumDistance{ 50.0f };					// Spatial only: the far end of the fade (silent from here with linear falloff)
-	float m_Rolloff{ 1.0f };
-	Audio::DistanceFalloff m_Falloff{ Audio::DistanceFalloff::Inverse };
+	std::shared_ptr<const Audio::SoundAsset> m_Sound;	///< From AssetLibrary::getOrLoadSound
+	float m_Volume{ 1.0f };								///< 0 to 1, followed while it plays
+	float m_Pitch{ 1.0f };								///< 1 is normal, followed while it plays
+	bool m_ShouldLoop{ false };							///< Starts again at the end, without a gap
+	bool m_ShouldPlayOnStart{ true };					///< Started by the audio system on the first frame
+	bool m_IsSpatial{ false };							///< Placed at the entity (panned, faded with distance)
+	float m_MinimumDistance{ 1.0f };					///< Spatial only: full volume up to here
+	float m_MaximumDistance{ 50.0f };					///< Spatial only: the far end of the fade (silent from here with linear falloff)
+	float m_Rolloff{ 1.0f };							///< Spatial only: how quickly it fades (below 1 is louder at a distance)
+	Audio::DistanceFalloff m_Falloff{ Audio::DistanceFalloff::Inverse };	///< Spatial only: the shape of the fade
 
 	// Run time
-	Audio::VoiceHandle m_Voice;							// While it plays
-	bool m_HasBeenStarted{ false };						// Play on start only happens once
+	Audio::VoiceHandle m_Voice;							///< While it plays
+	bool m_HasBeenStarted{ false };						///< Play on start only happens once
 };
 
-// The ears. Without one in the scene, the listener follows the active camera; with one, it's this entity
-// (its world position, and its forward (-Z) and up (+Y) directions).
+/**
+ * @brief The ears.
+ *
+ * Without one in the scene, the listener follows the active camera; with one, it's this entity (its world position,
+ * and its forward (-Z) and up (+Y) directions).
+ */
 struct AudioListenerComponent
 {
 };

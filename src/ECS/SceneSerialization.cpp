@@ -1,11 +1,13 @@
-// Scene <-> scene file (assets/Scenes/*.json). The rest of Scene lives in Scene.cpp.
+/**
+ * @file SceneSerialization.cpp
+ * @brief Scene <-> scene file (the .scene.json files in assets/Scenes): loading, saving, and the environment overrides. The rest of
+ * Scene lives in Scene.cpp.
+ */
 #include "Hephaestian/ECS/Scene.h"
 
 #include <algorithm>
 #include <cmath>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
 #include <glm/gtc/quaternion.hpp>
@@ -14,6 +16,7 @@
 #include <Vulkanised/utils/FileUtils.h>
 
 #include "Hephaestian/Assets/AssetLibrary.h"
+#include "Hephaestian/Core/HashMap.h"
 #include "Hephaestian/ECS/Components.h"
 #include "Hephaestian/ECS/Systems/SpriteSystems.h"
 #include "Hephaestian/Settings/HephaestianSettings.h"
@@ -23,29 +26,50 @@ namespace Hephaestian
 
 namespace
 {
+	/**
+	 * @brief A scene file's [x, y, z] as a vector.
+	 * @param ArrayToConvert The three numbers.
+	 * @return The vector.
+	 */
 	[[nodiscard]] glm::vec3 convertArrayToVector(const std::array<float, 3>& ArrayToConvert) noexcept
 	{
 		return { ArrayToConvert[0], ArrayToConvert[1], ArrayToConvert[2] };
 	}
 
-	// 4 decimals are plenty for a hand-editable file, and they keep rounding noise like 44.99999 or -0.0000001 out of it
+	/**
+	 * @brief Rounds a number for writing into a scene file.
+	 *
+	 * 4 decimals are plenty for a hand-editable file, and they keep rounding noise like 44.99999 or -0.0000001 out of it.
+	 * @param ValueToRound The number.
+	 * @return It rounded to 4 decimals (never -0).
+	 */
 	[[nodiscard]] float roundForSceneFile(float ValueToRound) noexcept
 	{
 		const float RoundedValue = std::round(ValueToRound * 10000.0f) / 10000.0f;
 		return RoundedValue == 0.0f ? 0.0f : RoundedValue;	// No "-0"
 	}
 
+	/**
+	 * @brief A vector as a scene file's [x, y, z], rounded (see roundForSceneFile).
+	 * @param VectorToConvert The vector.
+	 * @return The three rounded numbers.
+	 */
 	[[nodiscard]] std::array<float, 3> convertVectorToArrayForSceneFile(const glm::vec3& VectorToConvert) noexcept
 	{
 		return { roundForSceneFile(VectorToConvert.x), roundForSceneFile(VectorToConvert.y), roundForSceneFile(VectorToConvert.z) };
 	}
 
-	// Billboard modes as scene files spell them
+	/// Billboard modes as scene files spell them
 	constexpr std::array<std::pair<std::string_view, Components::SpriteBillboardMode>, 3> c_SpriteBillboardModeNames{ {
 		{ "none", Components::SpriteBillboardMode::None },
 		{ "faceCamera", Components::SpriteBillboardMode::FaceCamera },
 		{ "faceCameraUpright", Components::SpriteBillboardMode::FaceCameraUpright } } };
 
+	/**
+	 * @brief Reads a sprite's "billboard".
+	 * @param BillboardModeName "none", "faceCamera" or "faceCameraUpright".
+	 * @return The mode, or std::nullopt for anything else.
+	 */
 	[[nodiscard]] std::optional<Components::SpriteBillboardMode> parseSpriteBillboardModeName(std::string_view BillboardModeName) noexcept
 	{
 		for (const auto& [CurrentName, CurrentMode] : c_SpriteBillboardModeNames)
@@ -55,7 +79,11 @@ namespace
 		return std::nullopt;
 	}
 
-	// Distance falloffs as scene files spell them
+	/**
+	 * @brief Reads an audio block's "falloff".
+	 * @param FalloffName "inverse" or "linear".
+	 * @return The falloff, or std::nullopt for anything else.
+	 */
 	[[nodiscard]] std::optional<Audio::DistanceFalloff> parseDistanceFalloffName(std::string_view FalloffName) noexcept
 	{
 		if (FalloffName == "inverse") { return Audio::DistanceFalloff::Inverse; }
@@ -63,11 +91,21 @@ namespace
 		return std::nullopt;
 	}
 
+	/**
+	 * @brief A falloff as scene files spell it.
+	 * @param Falloff The falloff.
+	 * @return "inverse" or "linear".
+	 */
 	[[nodiscard]] std::string_view getDistanceFalloffName(Audio::DistanceFalloff Falloff) noexcept
 	{
 		return Falloff == Audio::DistanceFalloff::Linear ? "linear" : "inverse";
 	}
 
+	/**
+	 * @brief A billboard mode as scene files spell it.
+	 * @param BillboardMode The mode.
+	 * @return "none", "faceCamera" or "faceCameraUpright".
+	 */
 	[[nodiscard]] std::string_view getSpriteBillboardModeName(Components::SpriteBillboardMode BillboardMode) noexcept
 	{
 		for (const auto& [CurrentName, CurrentMode] : c_SpriteBillboardModeNames)
@@ -106,7 +144,7 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 	m_EnvironmentOverrides = { LoadedSceneFile.m_ClearColour, LoadedSceneFile.m_LightWorldPosition, LoadedSceneFile.m_LightColour, LoadedSceneFile.m_AudioVolume };
 
 	// 1. ASSETS: load (or reuse) everything in the asset table once, before any entity needs it
-	std::unordered_map<std::string, std::uint32_t> ModelIdentifiersByAssetName;
+	HashMap<std::string, std::uint32_t> ModelIdentifiersByAssetName;
 	for (const auto& [ModelAssetName, ModelRelativePath] : m_SceneAssetTable.m_ModelPathsByName)
 	{
 		if (const std::optional<Assets::ImportedModel> LoadedModel = AssetLibraryToLoadFrom.getOrLoadModel(ModelRelativePath))
@@ -118,7 +156,7 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 			LOGW("Scene {}: model '{}' ({}) couldn't be loaded, entities using it won't be drawn.", SceneFilePath.filename().string(), ModelAssetName, ModelRelativePath);
 		}
 	}
-	std::unordered_map<std::string, std::uint32_t> TextureIdentifiersByAssetName;
+	HashMap<std::string, std::uint32_t> TextureIdentifiersByAssetName;
 	for (const auto& [TextureAssetName, TextureRelativePath] : m_SceneAssetTable.m_TexturePathsByName)
 	{
 		if (const std::optional<std::uint32_t> LoadedTexture = AssetLibraryToLoadFrom.getOrLoadTexture(TextureRelativePath))
@@ -130,7 +168,7 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 			LOGW("Scene {}: texture '{}' ({}) couldn't be loaded, entities using it keep their own textures.", SceneFilePath.filename().string(), TextureAssetName, TextureRelativePath);
 		}
 	}
-	std::unordered_map<std::string, std::shared_ptr<const Assets::SpriteSheet>> SpriteSheetsByAssetName;
+	HashMap<std::string, std::shared_ptr<const Assets::SpriteSheet>> SpriteSheetsByAssetName;
 	for (const auto& [SpriteSheetAssetName, SpriteSheetRelativePath] : m_SceneAssetTable.m_SpriteSheetPathsByName)
 	{
 		if (std::shared_ptr<const Assets::SpriteSheet> LoadedSpriteSheet = AssetLibraryToLoadFrom.getOrLoadSpriteSheet(SpriteSheetRelativePath))
@@ -142,7 +180,7 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 			LOGW("Scene {}: sprite sheet '{}' ({}) couldn't be loaded, sprites using it won't be drawn.", SceneFilePath.filename().string(), SpriteSheetAssetName, SpriteSheetRelativePath);
 		}
 	}
-	std::unordered_map<std::string, std::shared_ptr<const Audio::SoundAsset>> SoundsByAssetName;
+	HashMap<std::string, std::shared_ptr<const Audio::SoundAsset>> SoundsByAssetName;
 	for (const auto& [SoundAssetName, SoundRelativePath] : m_SceneAssetTable.m_SoundPathsByName)
 	{
 		if (std::shared_ptr<const Audio::SoundAsset> LoadedSound = AssetLibraryToLoadFrom.getOrLoadSound(SoundRelativePath))
@@ -156,7 +194,7 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 	}
 
 	// 2. ENTITIES: every entity and its components. Parents come after, so the file can list entities in any order.
-	std::unordered_map<std::string, entt::entity> EntitiesBySceneIdentifier;
+	HashMap<std::string, entt::entity> EntitiesBySceneIdentifier;
 	for (std::size_t CurrentEntityIndex{ 0 }; CurrentEntityIndex < LoadedSceneFile.m_Entities.size(); ++CurrentEntityIndex)
 	{
 		const SceneFile::SceneFileEntity& EntityDescription = LoadedSceneFile.m_Entities[CurrentEntityIndex];
@@ -426,8 +464,8 @@ bool Scene::saveToJsonFile(const std::filesystem::path& SceneFilePath) const
 	std::ranges::sort(EntitiesToSave, [](entt::entity FirstEntity, entt::entity SecondEntity) { return entt::to_entity(FirstEntity) < entt::to_entity(SecondEntity); });
 
 	// Every entity needs a unique id: the one it was loaded with, or one made from its name for entities made in code
-	std::unordered_map<entt::entity, std::string> SceneIdentifiersByEntity;
-	std::unordered_set<std::string> UsedSceneIdentifiers;
+	HashMap<entt::entity, std::string> SceneIdentifiersByEntity;
+	HashSet<std::string> UsedSceneIdentifiers;
 	for (const entt::entity CurrentEntity : EntitiesToSave)
 	{
 		if (const auto* SerializationRecord = m_Registry.try_get<Components::SceneSerializationComponent>(CurrentEntity))

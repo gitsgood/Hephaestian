@@ -1,3 +1,7 @@
+/**
+ * @file ModelImporter.cpp
+ * @brief glTF/GLB import with fastgltf, OBJ/FBX import with ufbx, and the shared texture and model caches.
+ */
 #include "Hephaestian/Assets/ModelImporter.h"
 
 #include <algorithm>
@@ -23,23 +27,39 @@ namespace Hephaestian::Assets
 
 namespace
 {
-	constexpr glm::vec3 c_FallbackNormalPointingUp{ 0.0f, 1.0f, 0.0f };
+	constexpr glm::vec3 c_FallbackNormalPointingUp{ 0.0f, 1.0f, 0.0f };	///< For vertices whose generated normal came out zero
 
-	// Grows to wrap around whatever points it's given
+	/**
+	 * @brief An axis-aligned box that grows to wrap around whatever points it's given. Starts empty.
+	 */
 	struct AxisAlignedBounds
 	{
-		glm::vec3 m_MinimumCorner{ std::numeric_limits<float>::max() };
-		glm::vec3 m_MaximumCorner{ std::numeric_limits<float>::lowest() };
+		glm::vec3 m_MinimumCorner{ std::numeric_limits<float>::max() };		///< Smallest x, y and z so far
+		glm::vec3 m_MaximumCorner{ std::numeric_limits<float>::lowest() };	///< Largest x, y and z so far
 
+		/**
+		 * @brief Whether any point has been added yet.
+		 * @return True while empty.
+		 */
 		[[nodiscard]] bool isEmpty() const noexcept { return m_MinimumCorner.x > m_MaximumCorner.x; }
 
+		/**
+		 * @brief Grows to include a point.
+		 * @param PointToInclude The point.
+		 */
 		void expandToIncludePoint(const glm::vec3& PointToInclude) noexcept
 		{
 			m_MinimumCorner = glm::min(m_MinimumCorner, PointToInclude);
 			m_MaximumCorner = glm::max(m_MaximumCorner, PointToInclude);
 		}
 
-		// Transforms all 8 corners rather than every vertex, so placing a mesh 1000 times costs 8000 points, not millions
+		/**
+		 * @brief Grows to include another box, transformed.
+		 *
+		 * Transforms its 8 corners rather than every vertex, so placing a mesh 1000 times costs 8000 points, not millions.
+		 * @param BoundsToInclude The box (ignored if empty).
+		 * @param TransformToApply Where it's placed.
+		 */
 		void expandToIncludeTransformedBounds(const AxisAlignedBounds& BoundsToInclude, const glm::mat4& TransformToApply) noexcept
 		{
 			if (BoundsToInclude.isEmpty())
@@ -58,20 +78,32 @@ namespace
 		}
 	};
 
-	// A piece of geometry that's been uploaded, ready to be placed (possibly many times) as a ModelSubmesh
+	/**
+	 * @brief A piece of geometry that's been uploaded, ready to be placed (possibly many times) as a ModelSubmesh.
+	 */
 	struct UploadedSubmeshGeometry
 	{
-		std::uint32_t m_MeshIdentifier{ 0 };
-		std::uint32_t m_TextureIdentifier{ 0 };
-		AxisAlignedBounds m_LocalBounds;
+		std::uint32_t m_MeshIdentifier{ 0 };	///< The renderer's mesh
+		std::uint32_t m_TextureIdentifier{ 0 };	///< Its material's texture (white if none)
+		AxisAlignedBounds m_LocalBounds;		///< Its bounds before placement
 	};
 
+	/**
+	 * @brief A path as UTF-8 text (what the caches key on, and what's logged).
+	 * @param PathToConvert The path.
+	 * @return It in UTF-8, with forward slashes.
+	 */
 	[[nodiscard]] std::string convertPathToUtf8String(const std::filesystem::path& PathToConvert)
 	{
 		const std::u8string Utf8Path = PathToConvert.generic_u8string();
 		return std::string(Utf8Path.begin(), Utf8Path.end());
 	}
 
+	/**
+	 * @brief A file's extension, lowercased.
+	 * @param FilePath The file.
+	 * @return E.g. ".glb" (empty if it has none).
+	 */
 	[[nodiscard]] std::string getLowercaseFileExtension(const std::filesystem::path& FilePath)
 	{
 		std::string LowercaseExtension = convertPathToUtf8String(FilePath.extension());
@@ -79,7 +111,11 @@ namespace
 		return LowercaseExtension;
 	}
 
-	// Area-weighted smooth normals, for files that don't provide any (glTF allows that, and the lighting needs them)
+	/**
+	 * @brief Area-weighted smooth normals, for files that don't provide any (glTF allows that, and the lighting needs them).
+	 * @param VerticesToFill The vertices: their normals are overwritten.
+	 * @param TriangleIndices Three per triangle (out of range ones are skipped).
+	 */
 	void generateSmoothNormalsForTriangles(std::vector<Vulkanised::Vertex>& VerticesToFill, const std::vector<std::uint32_t>& TriangleIndices)
 	{
 		for (Vulkanised::Vertex& CurrentVertex : VerticesToFill)
@@ -114,6 +150,11 @@ namespace
 	}
 
 	// - glTF helpers
+	/**
+	 * @brief A fastgltf matrix as a glm one.
+	 * @param GltfMatrix The matrix (column major, like glm).
+	 * @return The same matrix.
+	 */
 	[[nodiscard]] glm::mat4 convertGltfMatrixToGlm(const fastgltf::math::nmat4x4& GltfMatrix) noexcept
 	{
 		glm::mat4 ConvertedMatrix{ 1.0f };
@@ -127,7 +168,11 @@ namespace
 		return ConvertedMatrix;
 	}
 
-	// Raw bytes behind a buffer that fastgltf already loaded into memory (empty if it isn't in memory)
+	/**
+	 * @brief The raw bytes behind a buffer or image that fastgltf already loaded into memory.
+	 * @param DataSourceToRead The data source.
+	 * @return Its bytes, or an empty span if it isn't in memory (a file or URI fastgltf didn't load).
+	 */
 	[[nodiscard]] std::span<const std::byte> getBytesOfLoadedGltfDataSource(const fastgltf::DataSource& DataSourceToRead)
 	{
 		return std::visit(fastgltf::visitor{
@@ -139,6 +184,11 @@ namespace
 	}
 
 	// - ufbx helpers
+	/**
+	 * @brief A ufbx matrix as a glm one.
+	 * @param UfbxMatrix The matrix (affine 3x4).
+	 * @return The same transform as a 4x4.
+	 */
 	[[nodiscard]] glm::mat4 convertUfbxMatrixToGlm(const ufbx_matrix& UfbxMatrix) noexcept
 	{
 		// ufbx matrices are affine 3x4, column major (3 basis columns + translation)
@@ -151,11 +201,21 @@ namespace
 		return ConvertedMatrix;
 	}
 
+	/**
+	 * @brief A ufbx vector as a glm one.
+	 * @param UfbxVector The vector (doubles).
+	 * @return The same vector, in floats.
+	 */
 	[[nodiscard]] glm::vec3 convertUfbxVectorToGlm(const ufbx_vec3& UfbxVector) noexcept
 	{
 		return { static_cast<float>(UfbxVector.x), static_cast<float>(UfbxVector.y), static_cast<float>(UfbxVector.z) };
 	}
 
+	/**
+	 * @brief A ufbx string (UTF-8) as a path.
+	 * @param UfbxString The string.
+	 * @return The path.
+	 */
 	[[nodiscard]] std::filesystem::path convertUfbxStringToPath(const ufbx_string& UfbxString)
 	{
 		const std::u8string Utf8String(reinterpret_cast<const char8_t*>(UfbxString.data), UfbxString.length);
@@ -540,7 +600,7 @@ std::optional<ImportedModel> ModelImporter::importUfbxModel(const std::filesyste
 	const std::filesystem::path ModelDirectory = AbsoluteModelFilePath.parent_path();
 
 	// 1. TEXTURES (once per ufbx texture)
-	std::unordered_map<const ufbx_texture*, std::uint32_t> TextureIdentifiersByUfbxTexture;
+	HashMap<const ufbx_texture*, std::uint32_t> TextureIdentifiersByUfbxTexture;
 
 	auto resolveTextureIdentifierOfUfbxTexture = [&](const ufbx_texture* UfbxTexture) -> std::uint32_t
 	{

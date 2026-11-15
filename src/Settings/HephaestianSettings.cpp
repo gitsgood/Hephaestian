@@ -1,3 +1,7 @@
+/**
+ * @file HephaestianSettings.cpp
+ * @brief Reading and writing HephaestianSettings.json (glaze does the JSON).
+ */
 #include "Hephaestian/Settings/HephaestianSettings.h"
 
 #include <string>
@@ -10,7 +14,7 @@ namespace Hephaestian
 
 namespace
 {
-	constexpr const char* c_HephaestianSettingsFileName{ "HephaestianSettings.json" };
+	constexpr const char* c_HephaestianSettingsFileName{ "HephaestianSettings.json" };	///< Next to the executable
 }
 
 std::filesystem::path getHephaestianSettingsFilePath()

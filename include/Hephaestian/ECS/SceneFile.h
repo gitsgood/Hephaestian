@@ -1,3 +1,41 @@
+/**
+ * @file SceneFile.h
+ * @brief The on-disk layout of a scene (`assets/Scenes/<name>.json`).
+ *
+ * Plain data only: Scene::loadFromJsonFile turns it into entities and components, Scene::saveToJsonFile turns entities
+ * back into it.
+ *
+ * @code{.json}
+ * {
+ *   "assets": {
+ *     "models":   { "Quarry": "Models/laz_mesh.obj" },            <- name: path relative to assets/
+ *     "textures": { "Logo": "resources/Hephaestos.png" },
+ *     "spriteSheets": { "Slime": "Sprites/Slime.spritesheet.json" },
+ *     "sounds": { "Theme": "Audio/Theme.mp3" }
+ *   },
+ *   "clearColour": [0.1, 0.1, 0.1],                               <- optional: overrides HephaestianSettings while this scene is loaded
+ *   "lightPosition": [20, 40, 15],                                <- optional, same
+ *   "lightColour": [1, 1, 1],                                     <- optional, same
+ *   "audioVolume": 0.8,                                           <- optional, same (0 to 1)
+ *   "entities": [
+ *     { "id": "Player", "position": [0, 1.7, 3], "freeFlyController": { "movementSpeed": 12 } },
+ *     { "id": "PlayerCamera", "parent": "Player", "camera": {} },
+ *     { "id": "Box", "primitive": "cube", "texture": "Logo", "rotationInDegrees": [0, 45, 0],
+ *       "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 } },
+ *     { "id": "Slime", "position": [2, 0, 0], "sprite": { "sheet": "Slime", "billboard": "faceCameraUpright" },
+ *       "spriteAnimation": { "clip": "hop" } },
+ *     { "id": "Music", "audio": { "sound": "Theme", "loop": true } },                       <- the same in both ears
+ *     { "id": "Radio", "position": [3, 1, 0], "audio": { "sound": "Theme", "spatial": true,  <- in the world
+ *       "minDistance": 2, "maxDistance": 25, "falloff": "linear" } },
+ *     { "id": "Ears", "parent": "Player", "audioListener": {} }                             <- optional: the active camera otherwise
+ *   ],
+ *   "activeCamera": "PlayerCamera"
+ * }
+ * @endcode
+ *
+ * Every block and field is optional (missing ones keep the defaults below), and unknown keys are ignored.
+ * Each member's JSON key is given first in its description.
+ */
 #ifndef HEPHAESTIAN_SCENEFILE_H
 #define HEPHAESTIAN_SCENEFILE_H
 
@@ -10,148 +48,148 @@
 
 #include "glaze/glaze.hpp"
 
-/*
-* The on-disk layout of a scene (assets/Scenes/<name>.json). Plain data only: Scene::loadFromJsonFile turns it into
-* entities and components, Scene::saveToJsonFile turns entities back into it.
-*
-*	{
-*	  "assets": {
-*	    "models":   { "Quarry": "Models/laz_mesh.obj" },		<- name: path relative to assets/
-*	    "textures": { "Logo": "resources/Hephaestos.png" },
-*	    "spriteSheets": { "Slime": "Sprites/Slime.spritesheet.json" },
-*	    "sounds": { "Theme": "Audio/Theme.mp3" }
-*	  },
-*	  "clearColour": [0.1, 0.1, 0.1],							<- optional: overrides HephaestianSettings while this scene is loaded
-*	  "lightPosition": [20, 40, 15],							<- optional, same
-*	  "lightColour": [1, 1, 1],									<- optional, same
-*	  "audioVolume": 0.8,										<- optional, same (0 to 1)
-*	  "entities": [
-*	    { "id": "Player", "position": [0, 1.7, 3], "freeFlyController": { "movementSpeed": 12 } },
-*	    { "id": "PlayerCamera", "parent": "Player", "camera": {} },
-*	    { "id": "Box", "primitive": "cube", "texture": "Logo", "rotationInDegrees": [0, 45, 0],
-*	      "constantRotation": { "axis": [0, 1, 0], "degreesPerSecond": 30 } },
-*	    { "id": "Slime", "position": [2, 0, 0], "sprite": { "sheet": "Slime", "billboard": "faceCameraUpright" },
-*	      "spriteAnimation": { "clip": "hop" } },
-*	    { "id": "Music", "audio": { "sound": "Theme", "loop": true } },					<- the same in both ears
-*	    { "id": "Radio", "position": [3, 1, 0], "audio": { "sound": "Theme", "spatial": true,	<- in the world
-*	      "minDistance": 2, "maxDistance": 25, "falloff": "linear" } },
-*	    { "id": "Ears", "parent": "Player", "audioListener": {} }							<- optional: the active camera otherwise
-*	  ],
-*	  "activeCamera": "PlayerCamera"
-*	}
-*
-* Every block and field is optional (missing ones keep the defaults below), and unknown keys are ignored.
-*/
+/**
+ * @brief The scene file's structs, read and written by glaze.
+ */
 namespace Hephaestian::SceneFile
 {
 
+/**
+ * @brief "assets": every asset the scene uses, by the name its entities refer to it with.
+ *
+ * Sorted by name (std::map), so saved files stay stable and diff nicely.
+ */
 struct SceneFileAssetTable
 {
-	std::map<std::string, std::string> m_ModelPathsByName;		// Sorted by name, so saved files stay stable and diff nicely
-	std::map<std::string, std::string> m_TexturePathsByName;
-	std::map<std::string, std::string> m_SpriteSheetPathsByName;	// .spritesheet.json sidecars or Aseprite JSON exports
-	std::map<std::string, std::string> m_SoundPathsByName;		// .mp3, .wav, .flac or .ogg
+	std::map<std::string, std::string> m_ModelPathsByName;			///< "models": .gltf, .glb, .obj or .fbx
+	std::map<std::string, std::string> m_TexturePathsByName;		///< "textures": images
+	std::map<std::string, std::string> m_SpriteSheetPathsByName;	///< "spriteSheets": .spritesheet.json sidecars, Aseprite JSON exports, or folders
+	std::map<std::string, std::string> m_SoundPathsByName;			///< "sounds": .mp3, .wav, .flac or .ogg
 };
 
+/**
+ * @brief "camera": makes the entity a camera (see CameraComponent).
+ */
 struct SceneFileCameraBlock
 {
-	float m_VerticalFieldOfViewInDegrees{ 60.0f };
-	float m_NearClippingPlaneDistance{ 0.1f };
-	float m_FarClippingPlaneDistance{ 1000.0f };
+	float m_VerticalFieldOfViewInDegrees{ 60.0f };	///< "verticalFieldOfViewInDegrees"
+	float m_NearClippingPlaneDistance{ 0.1f };		///< "nearClippingPlane"
+	float m_FarClippingPlaneDistance{ 1000.0f };	///< "farClippingPlane"
 };
 
+/**
+ * @brief "freeFlyController": WASD + mouse look (see FreeFlyMovementControllerComponent).
+ */
 struct SceneFileFreeFlyControllerBlock
 {
-	float m_MovementSpeedInUnitsPerSecond{ 3.0f };
-	float m_SprintMovementSpeedMultiplier{ 3.0f };
-	float m_MouseLookSensitivityInRadiansPerPixel{ 0.0025f };
+	float m_MovementSpeedInUnitsPerSecond{ 3.0f };				///< "movementSpeed"
+	float m_SprintMovementSpeedMultiplier{ 3.0f };				///< "sprintMultiplier"
+	float m_MouseLookSensitivityInRadiansPerPixel{ 0.0025f };	///< "mouseSensitivity"
 };
 
+/**
+ * @brief "constantRotation": spins forever (see ConstantRotationComponent).
+ */
 struct SceneFileConstantRotationBlock
 {
-	std::array<float, 3> m_RotationAxis{ 0.0f, 1.0f, 0.0f };
-	float m_RotationSpeedInDegreesPerSecond{ 45.0f };
+	std::array<float, 3> m_RotationAxis{ 0.0f, 1.0f, 0.0f };	///< "axis"
+	float m_RotationSpeedInDegreesPerSecond{ 45.0f };			///< "degreesPerSecond"
 };
 
-// Draws one frame of a sprite sheet from the asset table (see SpriteRendererComponent)
+/**
+ * @brief "sprite": draws one frame of a sprite sheet from the asset table (see SpriteRendererComponent).
+ */
 struct SceneFileSpriteBlock
 {
-	std::string m_SpriteSheetAssetName;
-	std::uint32_t m_FrameIndex{ 0 };
-	std::array<float, 3> m_Tint{ 1.0f, 1.0f, 1.0f };
-	std::array<float, 2> m_Pivot{ 0.5f, 0.0f };				// (0.5, 0) = bottom centre
-	std::string m_BillboardModeName{ "none" };				// "none", "faceCamera" or "faceCameraUpright"
-	bool m_IsFlippedHorizontally{ false };
-	bool m_IsFlippedVertically{ false };
-	bool m_IsLit{ false };
+	std::string m_SpriteSheetAssetName;				///< "sheet": its name in the asset table
+	std::uint32_t m_FrameIndex{ 0 };				///< "frame" (an animation overrides it)
+	std::array<float, 3> m_Tint{ 1.0f, 1.0f, 1.0f };	///< "tint": sRGB, 0 to 1
+	std::array<float, 2> m_Pivot{ 0.5f, 0.0f };		///< "pivot": (0.5, 0) = bottom centre
+	std::string m_BillboardModeName{ "none" };		///< "billboard": "none", "faceCamera" or "faceCameraUpright"
+	bool m_IsFlippedHorizontally{ false };			///< "flipX"
+	bool m_IsFlippedVertically{ false };			///< "flipY"
+	bool m_IsLit{ false };							///< "lit"
 };
 
-// Plays one of the sprite sheet's clips on the entity's sprite
+/**
+ * @brief "spriteAnimation": plays one of the sprite sheet's clips on the entity's sprite (see SpriteAnimatorComponent).
+ */
 struct SceneFileSpriteAnimationBlock
 {
-	std::string m_ClipName;
-	float m_PlaybackSpeed{ 1.0f };
-	bool m_IsPlaying{ true };
+	std::string m_ClipName;			///< "clip"
+	float m_PlaybackSpeed{ 1.0f };	///< "speed"
+	bool m_IsPlaying{ true };		///< "playing"
 };
 
-// Plays a sound from the asset table on this entity (see AudioSourceComponent)
+/**
+ * @brief "audio": plays a sound from the asset table on this entity (see AudioSourceComponent).
+ */
 struct SceneFileAudioBlock
 {
-	std::string m_SoundAssetName;
-	float m_Volume{ 1.0f };
-	float m_Pitch{ 1.0f };
-	bool m_ShouldLoop{ false };
-	bool m_ShouldPlayOnStart{ true };
-	bool m_IsSpatial{ false };					// true: placed at the entity, panned and faded with distance
-	float m_MinimumDistance{ 1.0f };
-	float m_MaximumDistance{ 50.0f };
-	float m_Rolloff{ 1.0f };
-	std::string m_FalloffName{ "inverse" };		// "inverse" (like real sound) or "linear" (silent at the maximum distance)
+	std::string m_SoundAssetName;				///< "sound": its name in the asset table
+	float m_Volume{ 1.0f };						///< "volume"
+	float m_Pitch{ 1.0f };						///< "pitch"
+	bool m_ShouldLoop{ false };					///< "loop"
+	bool m_ShouldPlayOnStart{ true };			///< "playOnStart"
+	bool m_IsSpatial{ false };					///< "spatial": true places it at the entity, panned and faded with distance
+	float m_MinimumDistance{ 1.0f };			///< "minDistance"
+	float m_MaximumDistance{ 50.0f };			///< "maxDistance"
+	float m_Rolloff{ 1.0f };					///< "rolloff"
+	std::string m_FalloffName{ "inverse" };		///< "falloff": "inverse" (like real sound) or "linear" (silent at the maximum distance)
 };
 
-// Makes this entity the ears instead of the active camera. Nothing to set: "audioListener": {}
+/**
+ * @brief "audioListener": makes this entity the ears instead of the active camera. Nothing to set: "audioListener": {}
+ */
 struct SceneFileAudioListenerBlock
 {
 };
 
+/**
+ * @brief One of "entities": an entity and every component it has.
+ */
 struct SceneFileEntity
 {
-	std::string m_SceneIdentifier;								// Unique within the scene
-	std::optional<std::string> m_DisplayName;					// Defaults to the id
-	std::optional<std::string> m_ParentSceneIdentifier;
+	std::string m_SceneIdentifier;							///< "id": unique within the scene
+	std::optional<std::string> m_DisplayName;				///< "name": defaults to the id
+	std::optional<std::string> m_ParentSceneIdentifier;		///< "parent": another entity's id
 
-	std::array<float, 3> m_Position{ 0.0f, 0.0f, 0.0f };			// Relative to the parent, if there is one
-	std::array<float, 3> m_RotationInDegrees{ 0.0f, 0.0f, 0.0f };	// Euler angles (pitch x, yaw y, roll z)
-	std::array<float, 3> m_Scale{ 1.0f, 1.0f, 1.0f };
+	std::array<float, 3> m_Position{ 0.0f, 0.0f, 0.0f };			///< "position": relative to the parent, if there is one
+	std::array<float, 3> m_RotationInDegrees{ 0.0f, 0.0f, 0.0f };	///< "rotationInDegrees": Euler angles (pitch x, yaw y, roll z)
+	std::array<float, 3> m_Scale{ 1.0f, 1.0f, 1.0f };				///< "scale"
 
 	// What it draws: a model from the asset table OR a built-in primitive, optionally with a texture from the asset table
-	std::optional<std::string> m_ModelAssetName;
-	std::optional<std::string> m_PrimitiveShapeName;
-	std::optional<std::string> m_TextureAssetName;
-	std::optional<bool> m_IsVisible;
+	std::optional<std::string> m_ModelAssetName;		///< "model": a name in the asset table
+	std::optional<std::string> m_PrimitiveShapeName;	///< "primitive": "quad", "cube", "sphere" or "sprite"
+	std::optional<std::string> m_TextureAssetName;		///< "texture": replaces the model's own textures
+	std::optional<bool> m_IsVisible;					///< "visible"
 
-	std::optional<SceneFileCameraBlock> m_Camera;
-	std::optional<SceneFileFreeFlyControllerBlock> m_FreeFlyController;
-	std::optional<SceneFileConstantRotationBlock> m_ConstantRotation;
-	std::optional<SceneFileSpriteBlock> m_Sprite;
-	std::optional<SceneFileSpriteAnimationBlock> m_SpriteAnimation;
-	std::optional<SceneFileAudioBlock> m_Audio;
-	std::optional<SceneFileAudioListenerBlock> m_AudioListener;
+	std::optional<SceneFileCameraBlock> m_Camera;						///< "camera"
+	std::optional<SceneFileFreeFlyControllerBlock> m_FreeFlyController;	///< "freeFlyController"
+	std::optional<SceneFileConstantRotationBlock> m_ConstantRotation;	///< "constantRotation"
+	std::optional<SceneFileSpriteBlock> m_Sprite;						///< "sprite"
+	std::optional<SceneFileSpriteAnimationBlock> m_SpriteAnimation;		///< "spriteAnimation"
+	std::optional<SceneFileAudioBlock> m_Audio;							///< "audio"
+	std::optional<SceneFileAudioListenerBlock> m_AudioListener;			///< "audioListener"
 };
 
+/**
+ * @brief A whole scene file.
+ */
 struct SceneFileContents
 {
-	SceneFileAssetTable m_Assets;
-	std::optional<std::array<float, 3>> m_ClearColour;
-	std::optional<std::array<float, 3>> m_LightWorldPosition;
-	std::optional<std::array<float, 3>> m_LightColour;
-	std::optional<float> m_AudioVolume;
-	std::vector<SceneFileEntity> m_Entities;
-	std::optional<std::string> m_ActiveCameraSceneIdentifier;
+	SceneFileAssetTable m_Assets;								///< "assets"
+	std::optional<std::array<float, 3>> m_ClearColour;			///< "clearColour"
+	std::optional<std::array<float, 3>> m_LightWorldPosition;	///< "lightPosition"
+	std::optional<std::array<float, 3>> m_LightColour;			///< "lightColour"
+	std::optional<float> m_AudioVolume;							///< "audioVolume"
+	std::vector<SceneFileEntity> m_Entities;					///< "entities"
+	std::optional<std::string> m_ActiveCameraSceneIdentifier;	///< "activeCamera": an entity's id
 };
 
 }
 
+/// @cond GLAZE_META
 // JSON key names: readable in the file, m_ names in C++ (same approach as HephaestianSettings)
 template <>
 struct glz::meta<Hephaestian::SceneFile::SceneFileAssetTable>
@@ -270,5 +308,6 @@ struct glz::meta<Hephaestian::SceneFile::SceneFileContents>
 		"entities", &T::m_Entities,
 		"activeCamera", &T::m_ActiveCameraSceneIdentifier);
 };
+/// @endcond
 
 #endif // !HEPHAESTIAN_SCENEFILE_H

@@ -1,3 +1,7 @@
+/**
+ * @file HephaestianSettingsManager.cpp
+ * @brief Settings subscriptions, change notification (with re-entrancy), saving and hot reloading.
+ */
 #include "Hephaestian/Settings/HephaestianSettingsManager.h"
 
 #include <utility>
@@ -10,10 +14,14 @@ namespace Hephaestian
 // =====================================================================================================================
 // SUBSCRIPTIONS
 // =====================================================================================================================
+/**
+ * @brief Every registered callback. Owned by the manager, watched (weakly) by each subscription, so either can be
+ * destroyed first.
+ */
 struct SettingsChangeSubscription::SubscriberRegistry
 {
-	std::map<std::uint64_t, SettingsChangedCallback> m_CallbacksBySubscriptionIdentifier;	// Ordered, so subscribers are notified in subscription order
-	std::uint64_t m_NextSubscriptionIdentifier{ 1 };
+	std::map<std::uint64_t, SettingsChangedCallback> m_CallbacksBySubscriptionIdentifier;	///< Ordered, so subscribers are notified in subscription order
+	std::uint64_t m_NextSubscriptionIdentifier{ 1 };	///< Never reused (0 means "not subscribed")
 };
 
 SettingsChangeSubscription::SettingsChangeSubscription(std::weak_ptr<SubscriberRegistry> RegistryToUnsubscribeFrom, std::uint64_t SubscriptionIdentifier) noexcept

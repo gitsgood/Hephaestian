@@ -1,3 +1,7 @@
+/**
+ * @file CameraSystem.cpp
+ * @brief The active camera's view and projection, handed to the renderer.
+ */
 #include "Hephaestian/ECS/Systems/CameraSystem.h"
 
 #include "Hephaestian/ECS/Components.h"

@@ -14,6 +14,11 @@ add_subdirectory(external/Vulkanised)
 # EnTT, the ECS. Header only, vendored like stb_image
 add_subdirectory(external/entt)
 
+# HASH MAPS: ankerl::unordered_dense 5.3.3 (github.com/martinus/unordered_dense), MIT, header only.
+# Every entry packed in one array (fast lookups, very fast iteration) instead of one allocation per entry like std::unordered_map.
+add_library(unordered_dense INTERFACE)
+target_include_directories(unordered_dense SYSTEM INTERFACE external/unordered_dense/include)  # SYSTEM: not under our warnings-as-errors
+
 # MODEL IMPORTING
 # - ufbx: .obj (+ .mtl) and .fbx
 add_subdirectory(external/ufbx)
@@ -148,6 +153,7 @@ endif()
 set(LIB_LIST
     Vulkanised # This include everything it includes for itself, so: glaze, vulkan, glm, stb_image and glfw (not that it should need to...)
     EnTT::EnTT # The ECS
+    unordered_dense # Hash maps and sets (Hephaestian/Core/HashMap.h)
     fastgltf::fastgltf # glTF/GLB importing
     ufbx::ufbx # OBJ/FBX importing
     OpenAL::OpenAL # Audio (a DLL, see above)
