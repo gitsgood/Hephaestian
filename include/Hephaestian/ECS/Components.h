@@ -144,15 +144,15 @@ struct FreeFlyMovementControllerComponent
 	[[deprecated]] float m_CurrentPitchAngleInRadians{ 0.0f };
 
 	// Key bindings (GLFW key codes), so different controllers can use different keys
-	int m_MoveForwardKey{ GLFW_KEY_W };			///< GLFW key code
-	int m_MoveBackwardKey{ GLFW_KEY_S };		///< GLFW key code
-	int m_MoveLeftKey{ GLFW_KEY_A };			///< GLFW key code
-	int m_MoveRightKey{ GLFW_KEY_D };			///< GLFW key code
-	int m_MoveUpKey{ GLFW_KEY_E };				///< GLFW key code (straight up, in world space)
-	int m_MoveDownKey{ GLFW_KEY_Q };			///< GLFW key code (straight down, in world space)
+	int m_MoveForwardKey{ GLFW_KEY_W };				///< GLFW key code
+	int m_MoveBackwardKey{ GLFW_KEY_S };			///< GLFW key code
+	int m_MoveLeftKey{ GLFW_KEY_A };				///< GLFW key code
+	int m_MoveRightKey{ GLFW_KEY_D };				///< GLFW key code
+	int m_MoveUpKey{ GLFW_KEY_E };					///< GLFW key code (follows the control scheme)
+	int m_MoveDownKey{ GLFW_KEY_Q };				///< GLFW key code (follows the control scheme)
 	int m_RollCounterClockwiseKey{ GLFW_KEY_Z };	///< GLFW key code (tilts the view's top side to the left)
 	int m_RollClockwiseKey{ GLFW_KEY_X };			///< GLFW key code (tilts the view's top side to the right)
-	int m_SprintKey{ GLFW_KEY_LEFT_SHIFT };		///< GLFW key code
+	int m_SprintKey{ GLFW_KEY_LEFT_SHIFT };			///< GLFW key code
 };
 
 /**

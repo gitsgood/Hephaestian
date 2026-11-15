@@ -48,6 +48,8 @@ public:
 private:
 	/** @brief The scene buttons (one per file, and "Save scene"). */
 	void drawSceneSection();
+	/** @brief The camera's control scheme. */
+	void drawCameraSection();
 	/** @brief Grid, vertical sync, background colour and light (redirected to the scene where it overrides them). */
 	void drawEnvironmentSection();
 	/** @brief Volume, mute, focus muting, HRTF, and the audio device's figures. */

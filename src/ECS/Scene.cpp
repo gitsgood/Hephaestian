@@ -130,10 +130,11 @@ bool Scene::setActiveCameraEntity(entt::entity NewActiveCameraEntity)
 	return true;
 }
 
-void Scene::updateSimulation(const InputManager& Input, float DeltaTimeInSeconds)
+void Scene::updateSimulation(const InputManager& Input, const HephaestianSettings& EngineSettings, float DeltaTimeInSeconds)
 {
+	const Systems::CameraControlScheme ControlScheme = Systems::parseCameraControlSchemeName(EngineSettings.m_CameraControlScheme).value_or(Systems::CameraControlScheme::WorldCoordinates);
 	// Order matters: everything that moves things goes first, then the hierarchy turns local transforms into world ones
-	Systems::updateFreeFlyMovementControllers(m_Registry, Input, DeltaTimeInSeconds);
+	Systems::updateFreeFlyMovementControllers(m_Registry, Input, ControlScheme, DeltaTimeInSeconds);
 	Systems::updateConstantRotations(m_Registry, DeltaTimeInSeconds);
 	Systems::updateSpriteAnimations(m_Registry, DeltaTimeInSeconds);
 

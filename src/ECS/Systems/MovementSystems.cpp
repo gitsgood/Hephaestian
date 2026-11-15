@@ -17,6 +17,7 @@ namespace
 	constexpr glm::vec3 c_UnrotatedForwardDirection{ 0.0f, 0.0f, -1.0f };	///< Where an unrotated entity looks
 	constexpr glm::vec3 c_UnrotatedRightDirection{ 1.0f, 0.0f, 0.0f };		///< Pitch turns around this (once yawed)
 	constexpr glm::vec3 c_RollAxisDirection{ 0.0f, 0.0f, 1.0f };			///< The view axis, pointing back at the viewer: a positive roll around it is counter-clockwise
+	constexpr glm::vec3 c_UnrotatedUpDirection{ 0.0f, 1.0f, 0.0f };			///< An unrotated entity's up: relative yaw turns around this
 
 	/**
 	 * @brief Reads yaw, pitch and roll back out of whatever rotation the entity currently has.
@@ -54,9 +55,44 @@ namespace
 			* glm::angleAxis(PitchAngleInRadians, c_UnrotatedRightDirection)
 			* glm::angleAxis(RollAngleInRadians, c_RollAxisDirection);
 	}
+
+	/**
+	 * @brief Turns a rotation around its own current axes (relative, spaceship-style controls).
+	 * @param Rotation The entity's rotation.
+	 * @param YawChangeInRadians Around its own up (positive = left).
+	 * @param PitchChangeInRadians Around its own right (positive = up).
+	 * @param RollChangeInRadians Around its own view axis (positive = counter-clockwise).
+	 * @return The turned rotation.
+	 */
+	[[nodiscard]] glm::quat applyRelativeTurn(const glm::quat& Rotation, float YawChangeInRadians, float PitchChangeInRadians, float RollChangeInRadians) noexcept
+	{
+		// Multiplying on the RIGHT turns around the entity's own axes, wherever they point now
+		const glm::quat TurnThisFrame = glm::angleAxis(YawChangeInRadians, c_UnrotatedUpDirection)
+			* glm::angleAxis(PitchChangeInRadians, c_UnrotatedRightDirection)
+			* glm::angleAxis(RollChangeInRadians, c_RollAxisDirection);
+
+		// Normalise every frame: nothing ever rebuilds this rotation from scratch, so floating point drift would add up
+		return glm::normalize(Rotation * TurnThisFrame);
+	}
 }
 
-void updateFreeFlyMovementControllers(entt::registry& Registry, const InputManager& Input, float DeltaTimeInSeconds)
+std::optional<CameraControlScheme> parseCameraControlSchemeName(std::string_view ControlSchemeName) noexcept
+{
+	if (ControlSchemeName == "worldCoordinates") { return CameraControlScheme::WorldCoordinates; }
+	if (ControlSchemeName == "relative") { return CameraControlScheme::Relative; }
+	return std::nullopt;
+}
+
+std::string_view getCameraControlSchemeName(CameraControlScheme ControlScheme) noexcept
+{
+	switch (ControlScheme)
+	{
+		case CameraControlScheme::Relative: return "relative";
+		default: return "worldCoordinates";
+	}
+}
+
+void updateFreeFlyMovementControllers(entt::registry& Registry, const InputManager& Input, CameraControlScheme ControlScheme, float DeltaTimeInSeconds)
 {
 	auto EntitiesWithFreeFlyControllers = Registry.view<Components::TransformComponent, const Components::FreeFlyMovementControllerComponent>();
 
@@ -71,36 +107,45 @@ void updateFreeFlyMovementControllers(entt::registry& Registry, const InputManag
 		if (Input.isKeyHeld(Controller.m_RollCounterClockwiseKey)) { RequestedRollDirection += 1.0f; }
 		if (Input.isKeyHeld(Controller.m_RollClockwiseKey)) { RequestedRollDirection -= 1.0f; }
 
+		// The same turn for both modes; they only differ in how it's applied
+		const float YawChangeInRadians = HasMouseLookMoved ? -MouseMovementDelta.x * Controller.m_MouseLookSensitivityInRadiansPerPixel : 0.0f;
+		const float PitchChangeInRadians = HasMouseLookMoved ? -MouseMovementDelta.y * Controller.m_MouseLookSensitivityInRadiansPerPixel : 0.0f;
+		const float RollChangeInRadians = RequestedRollDirection * Controller.m_RollSpeedInRadiansPerSecond * DeltaTimeInSeconds;
+
 		if (HasMouseLookMoved || RequestedRollDirection != 0.0f)
 		{
-			float CurrentYawAngleInRadians{ 0.0f };
-			float CurrentPitchAngleInRadians{ 0.0f };
-			float CurrentRollAngleInRadians{ 0.0f };
-			extractYawPitchAndRollFromRotation(Transform.m_LocalRotation, CurrentYawAngleInRadians, CurrentPitchAngleInRadians, CurrentRollAngleInRadians);
-
-			if (HasMouseLookMoved)
+			if (ControlScheme == CameraControlScheme::Relative)
 			{
-				// Mouse right turns right (negative yaw in a right-handed, Y-up world), mouse down looks down (GLFW's Y grows downwards)
-				CurrentYawAngleInRadians -= MouseMovementDelta.x * Controller.m_MouseLookSensitivityInRadiansPerPixel;
-				CurrentPitchAngleInRadians -= MouseMovementDelta.y * Controller.m_MouseLookSensitivityInRadiansPerPixel;
-				CurrentPitchAngleInRadians = glm::clamp(CurrentPitchAngleInRadians, -Controller.m_MaximumPitchAngleInRadians, Controller.m_MaximumPitchAngleInRadians);
+				Transform.m_LocalRotation = applyRelativeTurn(Transform.m_LocalRotation, YawChangeInRadians, PitchChangeInRadians, RollChangeInRadians);
 			}
-			CurrentRollAngleInRadians += RequestedRollDirection * Controller.m_RollSpeedInRadiansPerSecond * DeltaTimeInSeconds;
+			else
+			{
+				float CurrentYawAngleInRadians{ 0.0f };
+				float CurrentPitchAngleInRadians{ 0.0f };
+				float CurrentRollAngleInRadians{ 0.0f };
+				extractYawPitchAndRollFromRotation(Transform.m_LocalRotation, CurrentYawAngleInRadians, CurrentPitchAngleInRadians, CurrentRollAngleInRadians);
 
-			Transform.m_LocalRotation = buildRotationFromYawPitchAndRoll(CurrentYawAngleInRadians, CurrentPitchAngleInRadians, CurrentRollAngleInRadians);
+				// Mouse right turns right (negative yaw in a right-handed, Y-up world), mouse down looks down (GLFW's Y grows downwards)
+				CurrentYawAngleInRadians += YawChangeInRadians;
+				CurrentPitchAngleInRadians = glm::clamp(CurrentPitchAngleInRadians + PitchChangeInRadians, -Controller.m_MaximumPitchAngleInRadians, Controller.m_MaximumPitchAngleInRadians);
+				CurrentRollAngleInRadians += RollChangeInRadians;
+
+				Transform.m_LocalRotation = buildRotationFromYawPitchAndRoll(CurrentYawAngleInRadians, CurrentPitchAngleInRadians, CurrentRollAngleInRadians);
+			}
 		}
 
 		// 2. MOVE
 		const glm::vec3 ForwardDirection = Transform.m_LocalRotation * c_UnrotatedForwardDirection;
 		const glm::vec3 RightDirection = Transform.m_LocalRotation * c_UnrotatedRightDirection;
+		const glm::vec3 UpDirection = (ControlScheme == CameraControlScheme::Relative) ? Transform.m_LocalRotation * c_UnrotatedUpDirection : c_WorldUpDirection;
 
 		glm::vec3 RequestedMovementDirection{ 0.0f };
 		if (Input.isKeyHeld(Controller.m_MoveForwardKey))	{ RequestedMovementDirection += ForwardDirection; }
 		if (Input.isKeyHeld(Controller.m_MoveBackwardKey))	{ RequestedMovementDirection -= ForwardDirection; }
 		if (Input.isKeyHeld(Controller.m_MoveRightKey))		{ RequestedMovementDirection += RightDirection; }
 		if (Input.isKeyHeld(Controller.m_MoveLeftKey))		{ RequestedMovementDirection -= RightDirection; }
-		if (Input.isKeyHeld(Controller.m_MoveUpKey))		{ RequestedMovementDirection += c_WorldUpDirection; }
-		if (Input.isKeyHeld(Controller.m_MoveDownKey))		{ RequestedMovementDirection -= c_WorldUpDirection; }
+		if (Input.isKeyHeld(Controller.m_MoveUpKey))		{ RequestedMovementDirection += UpDirection; }
+		if (Input.isKeyHeld(Controller.m_MoveDownKey))		{ RequestedMovementDirection -= UpDirection; }
 
 		// Normalise so going diagonally isn't faster than going straight
 		const float RequestedMovementLength = glm::length(RequestedMovementDirection);

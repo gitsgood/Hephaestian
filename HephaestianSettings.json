@@ -20,5 +20,6 @@
    "audioMuted": false,
    "muteAudioWhenUnfocused": false,
    "audioHrtf": "auto",
+   "cameraControlScheme": "worldCoordinates",
    "startupScene": "Scenes/Main.scene.json"
 }

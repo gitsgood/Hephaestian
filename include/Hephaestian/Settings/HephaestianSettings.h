@@ -35,6 +35,11 @@ struct HephaestianSettings
 	std::array<float, 3> m_LightWorldPosition{ 20.0f, 40.0f, 15.0f };	///< Where the light is. The further away, the more it behaves like the sun (parallel light over the whole scene).
 	std::array<float, 3> m_LightColour{ 1.0f, 1.0f, 1.0f };			///< RGB, 0 to 1
 
+	// - Camera
+	/// How free-fly cameras turn: "worldCoordinates" or "relative" (see Systems::parseCameraControlSchemeName).
+	/// Text, so a typo can't break the whole file.
+	std::string m_CameraControlScheme{ "worldCoordinates" };
+
 	// - Audio: mute, focus muting and HRTF are the player's alone
 	float m_AudioVolume{ 1.0f };					///< 0 to 1, everything (a scene's "audioVolume" overrides it while loaded)
 	bool m_IsAudioMuted{ false };					///< Silences everything
@@ -104,6 +109,7 @@ struct glz::meta<Hephaestian::HephaestianSettings>
 		"audioMuted", &T::m_IsAudioMuted,
 		"muteAudioWhenUnfocused", &T::m_ShouldMuteAudioWhenUnfocused,
 		"audioHrtf", &T::m_AudioHrtfMode,
+		"cameraControlScheme", &T::m_CameraControlScheme,
 		"startupScene", &T::m_StartupSceneRelativePath
 	);
 };

@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <optional>
 
 // Third party
 // - EnTT is a ~3.5MB single header, so it REALLY wants to be precompiled

@@ -246,7 +246,7 @@ auto main(int ArgumentCount, char** Arguments) -> int
 		}
 
 		// 3. ECS SYSTEMS (movement, spinning, transform hierarchy)
-		GameScene.updateSimulation(Input, DeltaTimeInSeconds);
+		GameScene.updateSimulation(Input, SettingsManager.getCurrentSettings(), DeltaTimeInSeconds);
 
 		// 3b. AUDIO: sources follow their entities, the listener its entity or the camera. "Active" = focused and not minimised.
 		GLFWwindow* const RawWindow = window.load().get();

@@ -183,9 +183,10 @@ public:
 	/**
 	 * @brief Gameplay: free-fly controllers, constant rotations and sprite animations, then the transform hierarchy.
 	 * @param Input This frame's keyboard and mouse state.
+	 * @param EngineSettings The engine settings (the camera control scheme).
 	 * @param DeltaTimeInSeconds Time since the last frame.
 	 */
-	void updateSimulation(const InputManager& Input, float DeltaTimeInSeconds);
+	void updateSimulation(const InputManager& Input, const HephaestianSettings& EngineSettings, float DeltaTimeInSeconds);
 	/**
 	 * @brief Audio, after updateSimulation (sources follow their entity's world transform).
 	 *

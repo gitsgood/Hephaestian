@@ -15,6 +15,7 @@
 #include <Vulkanised/utils/FileUtils.h>
 
 #include "Hephaestian/Core/AssetPaths.h"
+#include "Hephaestian/ECS/Systems/MovementSystems.h"
 
 namespace Hephaestian::UI
 {
@@ -83,6 +84,7 @@ void HephaestianSettingsWidget::drawSettingsWindow()
 		ImGui::PushItemWidth(c_ControlWidthInPixels);	// Fixed: auto-resizing and window-relative widths would feed each other
 		drawSceneSection();
 		drawEnvironmentSection();
+		drawCameraSection();
 		drawAudioSection();
 		drawRendererStatisticsSection();
 		ImGui::PopItemWidth();
@@ -132,6 +134,24 @@ void HephaestianSettingsWidget::drawSceneSection()
 		ImGui::SameLine();
 		ImGui::TextDisabled("%s", LoadedSceneFilePath.filename().string().c_str());
 	}
+}
+
+void HephaestianSettingsWidget::drawCameraSection()
+{
+	ImGui::SeparatorText("Camera");
+	const HephaestianSettings& CurrentSettings = m_SettingsManager.getCurrentSettings();
+
+	constexpr std::array<Systems::CameraControlScheme, 2> c_ControlSchemeChoices{ Systems::CameraControlScheme::WorldCoordinates, Systems::CameraControlScheme::Relative };
+	constexpr std::array<const char*, 2> c_ControlSchemeChoiceLabels{ "World coordinates", "Relative" };
+	const Systems::CameraControlScheme CurrentControlScheme = Systems::parseCameraControlSchemeName(CurrentSettings.m_CameraControlScheme).value_or(Systems::CameraControlScheme::WorldCoordinates);
+	int SelectedControlSchemeIndex = static_cast<int>(std::ranges::find(c_ControlSchemeChoices, CurrentControlScheme) - c_ControlSchemeChoices.begin());
+	if (ImGui::Combo("Control scheme", &SelectedControlSchemeIndex, c_ControlSchemeChoiceLabels.data(), static_cast<int>(c_ControlSchemeChoiceLabels.size())))
+	{
+		const std::string SelectedControlSchemeName{ Systems::getCameraControlSchemeName(c_ControlSchemeChoices[static_cast<std::size_t>(SelectedControlSchemeIndex)]) };
+		m_SettingsManager.modifySettings([SelectedControlSchemeName](HephaestianSettings& Settings) { Settings.m_CameraControlScheme = SelectedControlSchemeName; });
+	}
+	ImGui::SetItemTooltip("World coordinates: the mouse turns around the world's vertical axis and stops short of straight up or down.\n"
+		"Relative: every turn is around the camera's own axes, with no limits, like a spaceship.");
 }
 
 void HephaestianSettingsWidget::drawEnvironmentSection()
