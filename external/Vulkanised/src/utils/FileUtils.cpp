@@ -86,4 +86,23 @@ const std::filesystem::path& getRuntimeAssetsDirectory() noexcept
 	return RuntimeAssetsDirectory;
 }
 
+const std::filesystem::path& getConfigurationDirectory() noexcept
+{
+	static const std::filesystem::path ConfigurationDirectory = []() noexcept -> std::filesystem::path
+	{
+		// (No LOG macros here either: the logger uses this to find its settings and log file.)
+	#ifdef VULKANISED_DEBUG_CONFIGURATION_DIRECTORY
+		const std::filesystem::path DebugConfigurationDirectory{ VULKANISED_DEBUG_CONFIGURATION_DIRECTORY };
+		std::error_code DirectoryCheckError;
+		if (std::filesystem::is_directory(DebugConfigurationDirectory, DirectoryCheckError))
+		{
+			return DebugConfigurationDirectory;
+		}
+	#endif
+		return getExecutableDirectory();
+	}();
+
+	return ConfigurationDirectory;
+}
+
 }

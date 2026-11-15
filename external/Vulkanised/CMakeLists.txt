@@ -67,6 +67,13 @@ add_library(${PROJECT_NAME} STATIC ${SOURCES} ${SHADER_FILES})
 # Precompile header lets goo
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/pch.h)
 
+# Debug builds only, and only if the game asks for it (set VULKANISED_DEBUG_CONFIGURATION_DIRECTORY before
+# add_subdirectory): the folder the logger's settings and log file live in, instead of next to the exe. Usually the
+# game's repository, where the copies the build deploys are, so Debug edits them directly. See getConfigurationDirectory.
+if (DEFINED VULKANISED_DEBUG_CONFIGURATION_DIRECTORY AND NOT VULKANISED_DEBUG_CONFIGURATION_DIRECTORY STREQUAL "")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE "$<$<CONFIG:Debug>:VULKANISED_DEBUG_CONFIGURATION_DIRECTORY=\"${VULKANISED_DEBUG_CONFIGURATION_DIRECTORY}\">")
+endif()
+
 # Tell CMake to actually bother including the headers in my own project (HAS to be after "add_executable")
 #target_include_directories(${PROJECT_NAME} PRIVATE include)
 

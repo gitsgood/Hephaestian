@@ -128,8 +128,9 @@ auto main(int ArgumentCount, char** Arguments) -> int
 		return EXIT_FAILURE;
 	}
 
-	// Engine settings (HephaestianSettings.json, next to the exe). Everything that depends on a setting subscribes to it,
-	// so it follows along no matter who changes it: a GUI, a key press, or someone editing the JSON while the game runs.
+	// Engine settings (HephaestianSettings.json, next to the exe; the repository's in Debug builds). Everything that
+	// depends on a setting subscribes to it, so it follows along no matter who changes it: a GUI, a key press, or someone
+	// editing the JSON while the game runs.
 	// (Clear colour and light are applied every frame instead, since the loaded scene can override them.)
 	HephaestianSettingsManager SettingsManager;
 	const SettingsChangeSubscription RendererSettingsSubscription = SettingsManager.subscribeToSettingsChanges(

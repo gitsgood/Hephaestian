@@ -29,6 +29,9 @@ namespace Vulkanised
 			//			Textures/
 			//			...			(whatever else the game deploys)
 			//
+			// (Debug builds of a game that sets VULKANISED_DEBUG_CONFIGURATION_DIRECTORY keep the settings and log files in
+			//  that folder instead: see getConfigurationDirectory.)
+			//
 			// Everything is found relative to the EXECUTABLE, never to the working directory. The old way (guessing "../../../"
 			// from which IDE built us) broke as soon as the exe was launched from anywhere else.
 
@@ -45,6 +48,11 @@ namespace Vulkanised
 
 			// <executable folder>/assets
 			[[nodiscard]] const std::filesystem::path& getRuntimeAssetsDirectory() noexcept;
+
+			// Where settings and log files are read and written (VulkanisedLoggerSettings.json, VulkanisedLog.log, and the
+			// game's own settings). The executable folder, except in Debug builds of a game that set
+			// VULKANISED_DEBUG_CONFIGURATION_DIRECTORY in CMake (usually its repository), when that folder exists.
+			[[nodiscard]] const std::filesystem::path& getConfigurationDirectory() noexcept;
 
 			// Returns a file buffer, read from the given path (use getRuntimeAssetsDirectory() to build it).
 			// In Release, the shaders come from the embedded headers instead of the disk.

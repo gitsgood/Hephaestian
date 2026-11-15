@@ -14,12 +14,14 @@ namespace Hephaestian
 
 namespace
 {
-	constexpr const char* c_HephaestianSettingsFileName{ "HephaestianSettings.json" };	///< Next to the executable
+	constexpr const char* c_HephaestianSettingsFileName{ "HephaestianSettings.json" };	///< In the configuration folder (see getHephaestianSettingsFilePath)
 }
 
 std::filesystem::path getHephaestianSettingsFilePath()
 {
-	return Vulkanised::Utilities::File::getExecutableDirectory() / c_HephaestianSettingsFileName;
+	// Next to the exe, or the repository in Debug builds (VULKANISED_DEBUG_CONFIGURATION_DIRECTORY in CMakeLists.txt),
+	// like the logger's own files
+	return Vulkanised::Utilities::File::getConfigurationDirectory() / c_HephaestianSettingsFileName;
 }
 
 HephaestianSettings loadHephaestianSettings()

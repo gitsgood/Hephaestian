@@ -1,7 +1,7 @@
 /**
  * @file HephaestianSettings.h
- * @brief The engine-wide settings (HephaestianSettings.json next to the executable): what they are, and reading and
- * writing the file.
+ * @brief The engine-wide settings (HephaestianSettings.json next to the executable, or in the repository in Debug
+ * builds): what they are, and reading and writing the file.
  *
  * To add a setting: a member in HephaestianSettings, plus a line in its glz::meta at the bottom of this file, and it's
  * in the file. HephaestianSettingsManager is what the rest of the engine goes through at runtime.
@@ -20,7 +20,7 @@ namespace Hephaestian
 {
 
 /**
- * @brief Engine-wide settings, read from HephaestianSettings.json next to the executable.
+ * @brief Engine-wide settings, read from HephaestianSettings.json next to the executable (in the repository in Debug builds).
  *
  * A scene file can override the environment (clear colour, light) and the audio volume while it's loaded: see
  * SceneEnvironmentOverrides. Everything else here is the player's alone.
@@ -57,7 +57,8 @@ struct HephaestianSettings
 /**
  * @brief Where the settings file lives.
  * @return `<executable folder>/HephaestianSettings.json` (the build copies the repo's copy there, like
- * VulkanisedLoggerSettings.json).
+ * VulkanisedLoggerSettings.json), or the repository's own copy in Debug builds
+ * (Vulkanised::Utilities::File::getConfigurationDirectory).
  */
 [[nodiscard]] std::filesystem::path getHephaestianSettingsFilePath();
 

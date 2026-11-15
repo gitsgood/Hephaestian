@@ -2,9 +2,9 @@
    "showInfiniteGrid": true,
    "verticalSync": false,
    "backgroundClearColour": [
-      0.0,
-      0.0,
-      0.0
+      0,
+      0,
+      0
    ],
    "lightPosition": [
       20,
@@ -16,9 +16,9 @@
       1,
       1
    ],
-   "audioVolume": 1.0,
+   "audioVolume": 1,
    "audioMuted": false,
-   "muteAudioWhenUnfocused": true,
+   "muteAudioWhenUnfocused": false,
    "audioHrtf": "auto",
    "startupScene": "Scenes/Main.scene.json"
 }

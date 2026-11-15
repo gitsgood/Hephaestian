@@ -16,16 +16,43 @@
    ],
    "entities": [
       {
-         "id": "Player",
+         "id": "LaFemme center of rotation",
          "position": [
             0,
             1.6,
             7
          ],
          "rotationInDegrees": [
+            -180,
+            84.7754,
+            -180
+         ],
+         "scale": [
+            1,
+            1,
+            1
+         ],
+         "constantRotation": {
+            "axis": [
+               0,
+               1,
+               0
+            ],
+            "degreesPerSecond": 30
+         }
+      },
+      {
+         "id": "Player",
+         "parent": "LaFemme center of rotation",
+         "position": [
             0,
+            1.6,
+            7
+         ],
+         "rotationInDegrees": [
+            -45,
             0,
-            0
+            75
          ],
          "scale": [
             1,
@@ -60,32 +87,6 @@
             "verticalFieldOfViewInDegrees": 60,
             "nearClippingPlane": 0.1,
             "farClippingPlane": 1000
-         }
-      },
-      {
-         "id": "LaFemme center of rotation",
-         "position": [
-            0,
-            1.6,
-            7
-         ],
-         "rotationInDegrees": [
-            -180,
-            84.7754,
-            -180
-         ],
-         "scale": [
-            1,
-            1,
-            1
-         ],
-         "constantRotation": {
-            "axis": [
-               0,
-               1,
-               0
-            ],
-            "degreesPerSecond": 30
          }
       },
       {

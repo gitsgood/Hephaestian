@@ -8,6 +8,10 @@ set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
+# Debug builds read and write the settings and log files here, in the repository, instead of next to the exe (the
+# repository's settings are the copies the build deploys). Must be set before Vulkanised is added: its logger uses it too.
+set(VULKANISED_DEBUG_CONFIGURATION_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
 # My very own rendering library (while it include its own stuff, it seems we still need to manually include them)
 add_subdirectory(external/Vulkanised)
 
