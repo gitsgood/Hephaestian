@@ -138,9 +138,9 @@ struct FreeFlyMovementControllerComponent
 
 	// Current orientation, kept as angles because rebuilding a quaternion from yaw/pitch never accumulates roll
 	/// Around world +Y. Not used at the moment: the system reads yaw and pitch back from the entity's rotation every frame.
-	float m_CurrentYawAngleInRadians{ 0.0f };
+	[[deprecated]] float m_CurrentYawAngleInRadians{ 0.0f };
 	/// Around local +X. Not used at the moment: the system reads yaw and pitch back from the entity's rotation every frame.
-	float m_CurrentPitchAngleInRadians{ 0.0f };
+	[[deprecated]] float m_CurrentPitchAngleInRadians{ 0.0f };
 
 	// Key bindings (GLFW key codes), so different controllers can use different keys
 	int m_MoveForwardKey{ GLFW_KEY_W };			///< GLFW key code
