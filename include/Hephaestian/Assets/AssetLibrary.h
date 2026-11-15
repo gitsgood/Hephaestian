@@ -55,8 +55,8 @@ enum class PrimitiveShape : int
  *
  * What a new scene no longer uses is let go when it loads (releaseAssetsUnusedByScene).
  *
- * Paths are relative to the runtime assets folder (`<exe folder>/assets`), e.g. "Models/Duck.glb" or
- * "resources/Hephaestos.png".
+ * Paths are relative to the assets folder, e.g. "Models/Duck.glb" or "resources/Hephaestos.png": `<exe folder>/assets`,
+ * or in Debug builds the repository's assets folder first (see resolveAssetPath).
  */
 class AssetLibrary
 {
@@ -70,13 +70,13 @@ public:
 
 	/**
 	 * @brief A model file (.gltf, .glb, .obj, .fbx), loaded on first use.
-	 * @param ModelRelativePath Relative to the runtime assets folder.
+	 * @param ModelRelativePath Relative to the assets folder (see resolveAssetPath).
 	 * @return The model, or std::nullopt (and logged) if the file couldn't be loaded.
 	 */
 	[[nodiscard]] std::optional<ImportedModel> getOrLoadModel(const std::filesystem::path& ModelRelativePath);
 	/**
 	 * @brief An image, as a texture, loaded on first use.
-	 * @param TextureRelativePath Relative to the runtime assets folder.
+	 * @param TextureRelativePath Relative to the assets folder (see resolveAssetPath).
 	 * @return The renderer's texture identifier, or std::nullopt (and logged) if the file couldn't be loaded.
 	 */
 	[[nodiscard]] std::optional<std::uint32_t> getOrLoadTexture(const std::filesystem::path& TextureRelativePath);
@@ -94,7 +94,7 @@ public:
 	 * @brief A sound file (.mp3, .wav, .flac, .ogg), loaded on first use.
 	 *
 	 * Decoded whole if it's short, streamed while playing if it's long (see AudioEngine). Shared by everything playing it.
-	 * @param SoundRelativePath Relative to the runtime assets folder.
+	 * @param SoundRelativePath Relative to the assets folder (see resolveAssetPath).
 	 * @return The sound, or nullptr (and logged) if it couldn't be loaded.
 	 */
 	[[nodiscard]] std::shared_ptr<const Audio::SoundAsset> getOrLoadSound(const std::filesystem::path& SoundRelativePath);
@@ -104,7 +104,7 @@ public:
 	 * SpriteSheet.h), loaded on first use.
 	 *
 	 * Its pages are decoded in parallel and uploaded, its frames and clips are ready. Shared by every sprite using it.
-	 * @param SpriteSheetRelativePath Relative to the runtime assets folder.
+	 * @param SpriteSheetRelativePath Relative to the assets folder (see resolveAssetPath).
 	 * @return The sheet, or nullptr (and logged) if it couldn't be loaded.
 	 */
 	[[nodiscard]] std::shared_ptr<const SpriteSheet> getOrLoadSpriteSheet(const std::filesystem::path& SpriteSheetRelativePath);

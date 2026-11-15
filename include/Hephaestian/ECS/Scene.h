@@ -133,8 +133,9 @@ public:
 	/**
 	 * @brief "Save scene": writes over the file the scene was loaded from.
 	 *
-	 * Debug builds ALSO write the repository's copy (`<repo>/assets/...`), which is the one the build deploys, so the
-	 * change survives the next build.
+	 * Debug builds load scenes from the repository's assets folder, so that's the file written. A scene loaded from the
+	 * copy next to the exe instead also gets its repository copy (`<repo>/assets/...`) written, since that's the one the
+	 * build deploys, so the change survives the next build.
 	 * @return False if no file was loaded, or it couldn't be written.
 	 */
 	bool saveOverLoadedSceneFile() const;

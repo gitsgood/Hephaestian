@@ -17,6 +17,8 @@
 #include <Vulkanised/Logger.h>
 #include <Vulkanised/utils/FileUtils.h>
 
+#include "Hephaestian/Core/AssetPaths.h"
+
 namespace Hephaestian::Assets
 {
 
@@ -26,12 +28,12 @@ namespace
 
 	/**
 	 * @brief Resolves an asset path the way every cache keys it.
-	 * @param AssetRelativePath Relative to the runtime assets folder (an absolute path is kept as it is).
+	 * @param AssetRelativePath Relative to the assets folder (see resolveAssetPath; an absolute path is kept as it is).
 	 * @return The absolute path, canonical where possible (so "a/../b" and "b" are the same asset).
 	 */
 	[[nodiscard]] std::filesystem::path convertToAbsoluteAssetPath(const std::filesystem::path& AssetRelativePath)
 	{
-		const std::filesystem::path AbsoluteAssetPath = AssetRelativePath.is_absolute() ? AssetRelativePath : Vulkanised::Utilities::File::getRuntimeAssetsDirectory() / AssetRelativePath;
+		const std::filesystem::path AbsoluteAssetPath = resolveAssetPath(AssetRelativePath);
 		std::error_code CanonicalisationError;
 		const std::filesystem::path CanonicalAssetPath = std::filesystem::weakly_canonical(AbsoluteAssetPath, CanonicalisationError);
 		return CanonicalisationError ? AbsoluteAssetPath : CanonicalAssetPath;

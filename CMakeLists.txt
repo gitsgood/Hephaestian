@@ -68,6 +68,7 @@ add_subdirectory(external/audio_decoders)
 # Set source files...
 set(SOURCES
     src/main.cpp
+    include/Hephaestian/Core/AssetPaths.h                       src/Core/AssetPaths.cpp
     include/Hephaestian/Input/InputManager.h                    src/Input/InputManager.cpp
     include/Hephaestian/ECS/Components.h
     include/Hephaestian/ECS/Scene.h                             src/ECS/Scene.cpp
@@ -118,8 +119,8 @@ target_precompile_headers(${PROJECT_NAME} PRIVATE src/pch.h)
 # Tell CMake to actually bother including the headers in my own project (HAS to be after "add_executable")
 target_include_directories(${PROJECT_NAME} PRIVATE include)
 
-# Debug builds only: where the repository's assets folder is, so "Save scene" can also update the copy the build deploys
-# (otherwise the next build would mirror the old version back next to the exe). Release builds never know the repo path.
+# Debug builds only: where the repository's assets folder is. Debug builds read scenes and assets straight from it, so an
+# edited file is picked up on the next (re)load without building (Core/AssetPaths.h). Release builds never know the repo path.
 target_compile_definitions(${PROJECT_NAME} PRIVATE "$<$<CONFIG:Debug>:HEPHAESTIAN_SOURCE_ASSETS_DIRECTORY=\"${CMAKE_CURRENT_SOURCE_DIR}/assets\">")
 
 # More is more.

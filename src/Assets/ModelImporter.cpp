@@ -22,6 +22,8 @@
 
 #include <Vulkanised/Logger.h>
 
+#include "Hephaestian/Core/AssetPaths.h"
+
 namespace Hephaestian::Assets
 {
 
@@ -240,7 +242,7 @@ bool ModelImporter::isModelFileExtensionSupported(const std::filesystem::path& M
 
 std::optional<ImportedModel> ModelImporter::importModelFromFile(const std::filesystem::path& ModelFilePath)
 {
-	std::filesystem::path AbsoluteModelFilePath = ModelFilePath.is_absolute() ? ModelFilePath : Vulkanised::Utilities::File::getRuntimeAssetsDirectory() / ModelFilePath;
+	std::filesystem::path AbsoluteModelFilePath = resolveAssetPath(ModelFilePath);
 	std::error_code CanonicalisationError;
 	const std::filesystem::path CanonicalModelFilePath = std::filesystem::weakly_canonical(AbsoluteModelFilePath, CanonicalisationError);
 	if (!CanonicalisationError)

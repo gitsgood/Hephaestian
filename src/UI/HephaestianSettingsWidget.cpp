@@ -14,6 +14,8 @@
 
 #include <Vulkanised/utils/FileUtils.h>
 
+#include "Hephaestian/Core/AssetPaths.h"
+
 namespace Hephaestian::UI
 {
 
@@ -57,8 +59,9 @@ HephaestianSettingsWidget::HephaestianSettingsWidget(HephaestianSettingsManager&
 	, m_AssetLibrary(AssetLibraryForSceneLoading)
 	, m_Renderer(RendererToInspect)
 {
-	// Every .json in assets/Scenes gets a load button. Looked up once, at startup.
-	const std::filesystem::path ScenesDirectory = Vulkanised::Utilities::File::getRuntimeAssetsDirectory() / "Scenes";
+	// Every .json in assets/Scenes gets a load button. Looked up once, at startup. Debug builds list the repository's
+	// folder (Core/AssetPaths.h), so clicking a scene reloads exactly the file being edited.
+	const std::filesystem::path ScenesDirectory = getGameAssetsDirectory() / "Scenes";
 	std::error_code DirectoryIterationError;
 	for (const std::filesystem::directory_entry& CurrentDirectoryEntry : std::filesystem::directory_iterator(ScenesDirectory, DirectoryIterationError))
 	{

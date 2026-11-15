@@ -11,6 +11,7 @@
 #include <Vulkanised/VulkanRenderer.h>
 
 #include "Hephaestian/Assets/AssetLibrary.h"
+#include "Hephaestian/Core/AssetPaths.h"
 #include "Hephaestian/Input/InputManager.h"
 #include "Hephaestian/ECS/Scene.h"
 #include "Hephaestian/Settings/HephaestianSettingsManager.h"
@@ -161,7 +162,8 @@ auto main(int ArgumentCount, char** Arguments) -> int
 	Assets::AssetLibrary AssetLibrary(renderer, GameAudioEngine);
 	Scene GameScene;
 	GameScene.setAudioEngine(GameAudioEngine);
-	const std::filesystem::path StartupSceneFilePath = Vulkanised::Utilities::File::getRuntimeAssetsDirectory()
+	// Debug builds read it from the repository's assets folder (Core/AssetPaths.h), so edits there need no rebuild
+	const std::filesystem::path StartupSceneFilePath = getGameAssetsDirectory()
 		/ StartupSceneFromCommandLine.value_or(SettingsManager.getCurrentSettings().m_StartupSceneRelativePath);
 	if (!GameScene.loadFromJsonFile(StartupSceneFilePath, AssetLibrary))
 	{

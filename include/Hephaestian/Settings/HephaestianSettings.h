@@ -43,7 +43,7 @@ struct HephaestianSettings
 	/// Text, so a typo can't break the whole file.
 	std::string m_AudioHrtfMode{ "auto" };
 
-	/// The scene opened at startup, relative to the runtime assets folder ("--scene <path>" on the command line wins)
+	/// The scene opened at startup, relative to the assets folder (see getGameAssetsDirectory; "--scene <path>" on the command line wins)
 	std::string m_StartupSceneRelativePath{ "Scenes/Main.scene.json" };
 
 	/**

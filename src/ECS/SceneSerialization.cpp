@@ -639,19 +639,23 @@ bool Scene::saveOverLoadedSceneFile() const
 	bool WasEverySaveSuccessful = saveToJsonFile(m_LoadedSceneFilePath);
 
 #ifdef HEPHAESTIAN_SOURCE_ASSETS_DIRECTORY
-	// Debug builds know where the repository's assets folder is (CMake passes it in): save there too, since that's the copy
-	// the build deploys next to the exe. Otherwise the next build would put the old version back.
+	// Debug builds normally load scenes from the repository's assets folder (Core/AssetPaths.h), so the save above already
+	// went there. A scene loaded from the copy next to the exe instead (the repository's folder was missing, or an absolute
+	// "--scene" path) is also saved into the repository, or the next build would put the old version back.
 	const std::filesystem::path PathInsideRuntimeAssets = m_LoadedSceneFilePath.lexically_relative(Vulkanised::Utilities::File::getRuntimeAssetsDirectory());
 	const bool IsSceneInsideRuntimeAssets = !PathInsideRuntimeAssets.empty() && *PathInsideRuntimeAssets.begin() != "..";
 	const std::filesystem::path SourceAssetsDirectory{ HEPHAESTIAN_SOURCE_ASSETS_DIRECTORY };
 	std::error_code DirectoryCheckError;
-	if (IsSceneInsideRuntimeAssets && std::filesystem::is_directory(SourceAssetsDirectory, DirectoryCheckError))
+	if (IsSceneInsideRuntimeAssets)
 	{
-		WasEverySaveSuccessful = saveToJsonFile(SourceAssetsDirectory / PathInsideRuntimeAssets) && WasEverySaveSuccessful;
-	}
-	else
-	{
-		LOGW("Couldn't find the repository's copy of {} ({}), only the copy next to the exe was saved.", m_LoadedSceneFilePath.filename().string(), SourceAssetsDirectory.string());
+		if (std::filesystem::is_directory(SourceAssetsDirectory, DirectoryCheckError))
+		{
+			WasEverySaveSuccessful = saveToJsonFile(SourceAssetsDirectory / PathInsideRuntimeAssets) && WasEverySaveSuccessful;
+		}
+		else
+		{
+			LOGW("Couldn't find the repository's copy of {} ({}), only the copy next to the exe was saved.", m_LoadedSceneFilePath.filename().string(), SourceAssetsDirectory.string());
+		}
 	}
 #endif
 

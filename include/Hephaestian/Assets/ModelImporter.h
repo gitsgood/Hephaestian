@@ -55,7 +55,7 @@ struct ImportedModel
  * hierarchy flattened into each submesh's local transform. Geometry and textures used several times in one file are
  * only uploaded once. Importing the same file twice returns the cached model.
  *
- * Relative paths are looked up in the runtime assets folder (e.g. "Models/Duck.glb" -> `<exe>/assets/Models/Duck.glb`).
+ * Relative paths are looked up in the assets folder by resolveAssetPath (e.g. "Models/Duck.glb" -> `<exe>/assets/Models/Duck.glb`, or `<repo>/assets/Models/Duck.glb` in Debug builds).
  */
 class ModelImporter
 {
@@ -72,7 +72,7 @@ public:
 
 	/**
 	 * @brief Imports a model file (or returns it from the cache if it was imported before).
-	 * @param ModelFilePath Absolute, or relative to the runtime assets folder.
+	 * @param ModelFilePath Absolute, or relative to the assets folder (see resolveAssetPath).
 	 * @return The model, or std::nullopt (and logged) if the file couldn't be imported.
 	 */
 	[[nodiscard]] std::optional<ImportedModel> importModelFromFile(const std::filesystem::path& ModelFilePath);
