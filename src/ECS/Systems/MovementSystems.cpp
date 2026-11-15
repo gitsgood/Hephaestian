@@ -16,33 +16,43 @@ namespace
 	constexpr glm::vec3 c_WorldUpDirection{ 0.0f, 1.0f, 0.0f };				///< Yaw turns around this
 	constexpr glm::vec3 c_UnrotatedForwardDirection{ 0.0f, 0.0f, -1.0f };	///< Where an unrotated entity looks
 	constexpr glm::vec3 c_UnrotatedRightDirection{ 1.0f, 0.0f, 0.0f };		///< Pitch turns around this (once yawed)
+	constexpr glm::vec3 c_RollAxisDirection{ 0.0f, 0.0f, 1.0f };			///< The view axis, pointing back at the viewer: a positive roll around it is counter-clockwise
 
 	/**
-	 * @brief Reads yaw and pitch back out of whatever rotation the entity currently has.
+	 * @brief Reads yaw, pitch and roll back out of whatever rotation the entity currently has.
 	 *
 	 * Doing this every frame (rather than storing the angles in the component) means the controller never fights anyone
 	 * else who sets the rotation, e.g. spawn code.
 	 * @param Rotation The entity's rotation.
 	 * @param[out] OutYawAngleInRadians Turn around world up (0 = looking down -Z).
 	 * @param[out] OutPitchAngleInRadians Up or down (positive = up).
+	 * @param[out] OutRollAngleInRadians "Turn" the whole view clockwise or counter-clockwise.
 	 */
-	void extractYawAndPitchFromRotation(const glm::quat& Rotation, float& OutYawAngleInRadians, float& OutPitchAngleInRadians) noexcept
+	void extractYawPitchAndRollFromRotation(const glm::quat& Rotation, float& OutYawAngleInRadians, float& OutPitchAngleInRadians, float& OutRollAngleInRadians) noexcept
 	{
 		const glm::vec3 ForwardDirection = Rotation * c_UnrotatedForwardDirection;
 		OutYawAngleInRadians = std::atan2(-ForwardDirection.x, -ForwardDirection.z);
 		OutPitchAngleInRadians = std::asin(glm::clamp(ForwardDirection.y, -1.0f, 1.0f));
+
+		// Roll: undo yaw and pitch, and what's left is a turn around the view axis. Its angle is how far "up" has tilted.
+		const glm::quat RotationWithoutRoll = glm::angleAxis(OutYawAngleInRadians, c_WorldUpDirection) * glm::angleAxis(OutPitchAngleInRadians, c_UnrotatedRightDirection);
+		const glm::vec3 UpDirectionWithoutYawAndPitch = glm::inverse(RotationWithoutRoll) * Rotation * c_WorldUpDirection;
+		OutRollAngleInRadians = std::atan2(-UpDirectionWithoutYawAndPitch.x, UpDirectionWithoutYawAndPitch.y);
 	}
 
 	/**
-	 * @brief Builds a rotation with no roll.
+	 * @brief Builds a rotation WITH roll.
 	 * @param YawAngleInRadians Turn around world up.
 	 * @param PitchAngleInRadians Up or down, around the yawed right axis.
+	 * @param RollAngleInRadians Clockwise or counter-clowise. Looks like it rotates the whole view.
 	 * @return The rotation.
 	 */
-	[[nodiscard]] glm::quat buildRotationFromYawAndPitch(float YawAngleInRadians, float PitchAngleInRadians) noexcept
+	[[nodiscard]] glm::quat buildRotationFromYawPitchAndRoll(float YawAngleInRadians, float PitchAngleInRadians, float RollAngleInRadians) noexcept
 	{
-		// Yaw around the world up axis first, then pitch around the (already yawed) local right axis. No roll, ever.
-		return glm::angleAxis(YawAngleInRadians, c_WorldUpDirection) * glm::angleAxis(PitchAngleInRadians, c_UnrotatedRightDirection);
+		// Yaw around world up, then pitch around the yawed right axis, then roll around the resulting view axis
+		return glm::angleAxis(YawAngleInRadians, c_WorldUpDirection)
+			* glm::angleAxis(PitchAngleInRadians, c_UnrotatedRightDirection)
+			* glm::angleAxis(RollAngleInRadians, c_RollAxisDirection);
 	}
 }
 
@@ -52,22 +62,32 @@ void updateFreeFlyMovementControllers(entt::registry& Registry, const InputManag
 
 	EntitiesWithFreeFlyControllers.each([&](Components::TransformComponent& Transform, const Components::FreeFlyMovementControllerComponent& Controller)
 	{
-		// 1. LOOK AROUND
+		// 1. LOOK AROUND (mouse) AND ROLL (keys)
 		const bool IsAllowedToLookAround = !Controller.m_OnlyLookAroundWhileMouseCursorIsCaptured || Input.isMouseCursorCaptured();
 		const glm::vec2 MouseMovementDelta = Input.getMouseMovementDeltaThisFrame();
+		const bool HasMouseLookMoved = IsAllowedToLookAround && (MouseMovementDelta.x != 0.0f || MouseMovementDelta.y != 0.0f);
 
-		if (IsAllowedToLookAround && (MouseMovementDelta.x != 0.0f || MouseMovementDelta.y != 0.0f))
+		float RequestedRollDirection{ 0.0f };	// +1 counter-clockwise, -1 clockwise, 0 for neither (or both)
+		if (Input.isKeyHeld(Controller.m_RollCounterClockwiseKey)) { RequestedRollDirection += 1.0f; }
+		if (Input.isKeyHeld(Controller.m_RollClockwiseKey)) { RequestedRollDirection -= 1.0f; }
+
+		if (HasMouseLookMoved || RequestedRollDirection != 0.0f)
 		{
 			float CurrentYawAngleInRadians{ 0.0f };
 			float CurrentPitchAngleInRadians{ 0.0f };
-			extractYawAndPitchFromRotation(Transform.m_LocalRotation, CurrentYawAngleInRadians, CurrentPitchAngleInRadians);
+			float CurrentRollAngleInRadians{ 0.0f };
+			extractYawPitchAndRollFromRotation(Transform.m_LocalRotation, CurrentYawAngleInRadians, CurrentPitchAngleInRadians, CurrentRollAngleInRadians);
 
-			// Mouse right turns right (negative yaw in a right-handed, Y-up world), mouse down looks down (GLFW's Y grows downwards)
-			CurrentYawAngleInRadians -= MouseMovementDelta.x * Controller.m_MouseLookSensitivityInRadiansPerPixel;
-			CurrentPitchAngleInRadians -= MouseMovementDelta.y * Controller.m_MouseLookSensitivityInRadiansPerPixel;
-			CurrentPitchAngleInRadians = glm::clamp(CurrentPitchAngleInRadians, -Controller.m_MaximumPitchAngleInRadians, Controller.m_MaximumPitchAngleInRadians);
+			if (HasMouseLookMoved)
+			{
+				// Mouse right turns right (negative yaw in a right-handed, Y-up world), mouse down looks down (GLFW's Y grows downwards)
+				CurrentYawAngleInRadians -= MouseMovementDelta.x * Controller.m_MouseLookSensitivityInRadiansPerPixel;
+				CurrentPitchAngleInRadians -= MouseMovementDelta.y * Controller.m_MouseLookSensitivityInRadiansPerPixel;
+				CurrentPitchAngleInRadians = glm::clamp(CurrentPitchAngleInRadians, -Controller.m_MaximumPitchAngleInRadians, Controller.m_MaximumPitchAngleInRadians);
+			}
+			CurrentRollAngleInRadians += RequestedRollDirection * Controller.m_RollSpeedInRadiansPerSecond * DeltaTimeInSeconds;
 
-			Transform.m_LocalRotation = buildRotationFromYawAndPitch(CurrentYawAngleInRadians, CurrentPitchAngleInRadians);
+			Transform.m_LocalRotation = buildRotationFromYawPitchAndRoll(CurrentYawAngleInRadians, CurrentPitchAngleInRadians, CurrentRollAngleInRadians);
 		}
 
 		// 2. MOVE

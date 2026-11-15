@@ -134,6 +134,7 @@ struct FreeFlyMovementControllerComponent
 	float m_SprintMovementSpeedMultiplier{ 3.0f };				///< Speed times this while the sprint key is held
 	float m_MouseLookSensitivityInRadiansPerPixel{ 0.0025f };	///< How far one pixel of mouse movement turns
 	float m_MaximumPitchAngleInRadians{ glm::radians(89.0f) };	///< Stops the camera flipping over when looking straight up or down
+	float m_RollSpeedInRadiansPerSecond{ glm::radians(90.0f) };	///< How fast we can tilt the view
 	bool m_OnlyLookAroundWhileMouseCursorIsCaptured{ true };	///< Mouse look only while the cursor is captured (right click in the demo)
 
 	// Current orientation, kept as angles because rebuilding a quaternion from yaw/pitch never accumulates roll
@@ -149,6 +150,8 @@ struct FreeFlyMovementControllerComponent
 	int m_MoveRightKey{ GLFW_KEY_D };			///< GLFW key code
 	int m_MoveUpKey{ GLFW_KEY_E };				///< GLFW key code (straight up, in world space)
 	int m_MoveDownKey{ GLFW_KEY_Q };			///< GLFW key code (straight down, in world space)
+	int m_RollCounterClockwiseKey{ GLFW_KEY_Z };	///< GLFW key code (tilts the view's top side to the left)
+	int m_RollClockwiseKey{ GLFW_KEY_X };			///< GLFW key code (tilts the view's top side to the right)
 	int m_SprintKey{ GLFW_KEY_LEFT_SHIFT };		///< GLFW key code
 };
 
