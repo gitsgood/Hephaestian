@@ -137,12 +137,6 @@ struct FreeFlyMovementControllerComponent
 	float m_RollSpeedInRadiansPerSecond{ glm::radians(90.0f) };	///< How fast we can tilt the view
 	bool m_OnlyLookAroundWhileMouseCursorIsCaptured{ true };	///< Mouse look only while the cursor is captured (right click in the demo)
 
-	// Current orientation, kept as angles because rebuilding a quaternion from yaw/pitch never accumulates roll
-	/// Around world +Y. Not used at the moment: the system reads yaw and pitch back from the entity's rotation every frame.
-	[[deprecated]] float m_CurrentYawAngleInRadians{ 0.0f };
-	/// Around local +X. Not used at the moment: the system reads yaw and pitch back from the entity's rotation every frame.
-	[[deprecated]] float m_CurrentPitchAngleInRadians{ 0.0f };
-
 	// Key bindings (GLFW key codes), so different controllers can use different keys
 	int m_MoveForwardKey{ GLFW_KEY_W };				///< GLFW key code
 	int m_MoveBackwardKey{ GLFW_KEY_S };			///< GLFW key code
