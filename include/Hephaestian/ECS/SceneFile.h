@@ -17,6 +17,7 @@
  *   "lightPosition": [20, 40, 15],                                <- optional, same
  *   "lightColour": [1, 1, 1],                                     <- optional, same
  *   "audioVolume": 0.8,                                           <- optional, same (0 to 1)
+ *   "cameraControlScheme": "relative",                            <- optional, same ("worldCoordinates" or "relative")
  *   "entities": [
  *     { "id": "Player", "position": [0, 1.7, 3], "freeFlyController": { "movementSpeed": 12 } },
  *     { "id": "PlayerCamera", "parent": "Player", "camera": {} },
@@ -183,6 +184,7 @@ struct SceneFileContents
 	std::optional<std::array<float, 3>> m_LightWorldPosition;	///< "lightPosition"
 	std::optional<std::array<float, 3>> m_LightColour;			///< "lightColour"
 	std::optional<float> m_AudioVolume;							///< "audioVolume"
+	std::optional<std::string> m_CameraControlScheme;			///< "cameraControlScheme"
 	std::vector<SceneFileEntity> m_Entities;					///< "entities"
 	std::optional<std::string> m_ActiveCameraSceneIdentifier;	///< "activeCamera": an entity's id
 };
@@ -305,6 +307,7 @@ struct glz::meta<Hephaestian::SceneFile::SceneFileContents>
 		"lightPosition", &T::m_LightWorldPosition,
 		"lightColour", &T::m_LightColour,
 		"audioVolume", &T::m_AudioVolume,
+		"cameraControlScheme", &T::m_CameraControlScheme,
 		"entities", &T::m_Entities,
 		"activeCamera", &T::m_ActiveCameraSceneIdentifier);
 };

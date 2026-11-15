@@ -39,6 +39,7 @@ struct SceneEnvironmentOverrides
 	std::optional<std::array<float, 3>> m_LightWorldPosition;	///< "lightPosition"
 	std::optional<std::array<float, 3>> m_LightColour;			///< "lightColour": RGB, 0 to 1
 	std::optional<float> m_AudioVolume;							///< "audioVolume": 0 to 1 (mute and focus muting stay the player's choice: engine only)
+	std::optional<std::string> m_CameraControlScheme;			///< "cameraControlScheme": "worldCoordinates" or "relative" (see Systems::parseCameraControlSchemeName)
 };
 
 /**
@@ -183,7 +184,7 @@ public:
 	/**
 	 * @brief Gameplay: free-fly controllers, constant rotations and sprite animations, then the transform hierarchy.
 	 * @param Input This frame's keyboard and mouse state.
-	 * @param EngineSettings The engine settings (the camera control scheme).
+	 * @param EngineSettings The engine settings (the camera control scheme, scene can override the engine settings).
 	 * @param DeltaTimeInSeconds Time since the last frame.
 	 */
 	void updateSimulation(const InputManager& Input, const HephaestianSettings& EngineSettings, float DeltaTimeInSeconds);

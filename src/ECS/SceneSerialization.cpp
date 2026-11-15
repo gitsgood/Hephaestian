@@ -141,7 +141,7 @@ bool Scene::loadFromJsonFile(const std::filesystem::path& SceneFilePath, Assets:
 	clear();
 	m_LoadedSceneFilePath = SceneFilePath;
 	m_SceneAssetTable = LoadedSceneFile.m_Assets;
-	m_EnvironmentOverrides = { LoadedSceneFile.m_ClearColour, LoadedSceneFile.m_LightWorldPosition, LoadedSceneFile.m_LightColour, LoadedSceneFile.m_AudioVolume };
+	m_EnvironmentOverrides = { LoadedSceneFile.m_ClearColour, LoadedSceneFile.m_LightWorldPosition, LoadedSceneFile.m_LightColour, LoadedSceneFile.m_AudioVolume, LoadedSceneFile.m_CameraControlScheme };
 
 	// 1. ASSETS: load (or reuse) everything in the asset table once, before any entity needs it
 	HashMap<std::string, std::uint32_t> ModelIdentifiersByAssetName;
@@ -454,6 +454,7 @@ bool Scene::saveToJsonFile(const std::filesystem::path& SceneFilePath) const
 	SceneFileToWrite.m_LightWorldPosition = m_EnvironmentOverrides.m_LightWorldPosition;
 	SceneFileToWrite.m_LightColour = m_EnvironmentOverrides.m_LightColour;
 	SceneFileToWrite.m_AudioVolume = m_EnvironmentOverrides.m_AudioVolume;
+	SceneFileToWrite.m_CameraControlScheme = m_EnvironmentOverrides.m_CameraControlScheme;
 
 	// Entities in creation order (lowest entity index first), which for a loaded scene is the file's own order
 	std::vector<entt::entity> EntitiesToSave;

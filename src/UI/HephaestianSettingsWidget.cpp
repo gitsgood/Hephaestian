@@ -141,14 +141,27 @@ void HephaestianSettingsWidget::drawCameraSection()
 	ImGui::SeparatorText("Camera");
 	const HephaestianSettings& CurrentSettings = m_SettingsManager.getCurrentSettings();
 
+	// Like the environment: edited in the scene while the scene overrides it (kept on disk by "Save scene")
+	std::optional<std::string>& SceneControlSchemeOverride = m_Scene.getEnvironmentOverrides().m_CameraControlScheme;
+	const bool IsSceneOverriding = SceneControlSchemeOverride.has_value();
+	const std::string ControlSchemeLabel = std::string("Control scheme") + (IsSceneOverriding ? c_SceneOverrideLabelSuffix : "");
+	const std::string& CurrentControlSchemeName = IsSceneOverriding ? SceneControlSchemeOverride.value() : CurrentSettings.m_CameraControlScheme;
+
 	constexpr std::array<Systems::CameraControlScheme, 2> c_ControlSchemeChoices{ Systems::CameraControlScheme::WorldCoordinates, Systems::CameraControlScheme::Relative };
 	constexpr std::array<const char*, 2> c_ControlSchemeChoiceLabels{ "World coordinates", "Relative" };
-	const Systems::CameraControlScheme CurrentControlScheme = Systems::parseCameraControlSchemeName(CurrentSettings.m_CameraControlScheme).value_or(Systems::CameraControlScheme::WorldCoordinates);
+	const Systems::CameraControlScheme CurrentControlScheme = Systems::parseCameraControlSchemeName(CurrentControlSchemeName).value_or(Systems::CameraControlScheme::WorldCoordinates);
 	int SelectedControlSchemeIndex = static_cast<int>(std::ranges::find(c_ControlSchemeChoices, CurrentControlScheme) - c_ControlSchemeChoices.begin());
 	if (ImGui::Combo("Control scheme", &SelectedControlSchemeIndex, c_ControlSchemeChoiceLabels.data(), static_cast<int>(c_ControlSchemeChoiceLabels.size())))
 	{
 		const std::string SelectedControlSchemeName{ Systems::getCameraControlSchemeName(c_ControlSchemeChoices[static_cast<std::size_t>(SelectedControlSchemeIndex)]) };
-		m_SettingsManager.modifySettings([SelectedControlSchemeName](HephaestianSettings& Settings) { Settings.m_CameraControlScheme = SelectedControlSchemeName; });
+		if (IsSceneOverriding)
+		{
+			SceneControlSchemeOverride = SelectedControlSchemeName;
+		}
+		else
+		{
+			m_SettingsManager.modifySettings([SelectedControlSchemeName](HephaestianSettings& Settings) { Settings.m_CameraControlScheme = SelectedControlSchemeName; });
+		}
 	}
 	ImGui::SetItemTooltip("World coordinates: the mouse turns around the world's vertical axis and stops short of straight up or down.\n"
 		"Relative: every turn is around the camera's own axes, with no limits, like a spaceship.");

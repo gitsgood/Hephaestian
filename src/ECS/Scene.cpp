@@ -132,7 +132,9 @@ bool Scene::setActiveCameraEntity(entt::entity NewActiveCameraEntity)
 
 void Scene::updateSimulation(const InputManager& Input, const HephaestianSettings& EngineSettings, float DeltaTimeInSeconds)
 {
-	const Systems::CameraControlScheme ControlScheme = Systems::parseCameraControlSchemeName(EngineSettings.m_CameraControlScheme).value_or(Systems::CameraControlScheme::WorldCoordinates);
+	// The scene's control scheme when it sets one, otherwise the engine's (by reference: no string copy every frame)
+	const std::string& ControlSchemeName = m_EnvironmentOverrides.m_CameraControlScheme.has_value() ? m_EnvironmentOverrides.m_CameraControlScheme.value() : EngineSettings.m_CameraControlScheme;
+	const Systems::CameraControlScheme ControlScheme = Systems::parseCameraControlSchemeName(ControlSchemeName).value_or(Systems::CameraControlScheme::WorldCoordinates);
 	// Order matters: everything that moves things goes first, then the hierarchy turns local transforms into world ones
 	Systems::updateFreeFlyMovementControllers(m_Registry, Input, ControlScheme, DeltaTimeInSeconds);
 	Systems::updateConstantRotations(m_Registry, DeltaTimeInSeconds);
