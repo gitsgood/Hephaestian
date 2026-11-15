@@ -1,0 +1,46 @@
+# Generates the Doxygen documentation and publishes it to GitHub Pages on every push to main.
+name: Documentation
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:          # Also a "Run workflow" button on the Actions tab
+
+# What the job may do: read the code, and deploy to Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A newer push cancels a deployment still running, instead of both racing
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Doxygen and Graphviz
+        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
+
+      # The Doxyfile's DOT_PATH is a path on the Windows PC: override it with nothing, so dot is found on the PATH.
+      # "doxygen -" reads the settings from stdin, and a later line wins over an earlier one.
+      - name: Generate the documentation
+        run: ( cat Doxyfile; echo "DOT_PATH =" ) | doxygen -
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
