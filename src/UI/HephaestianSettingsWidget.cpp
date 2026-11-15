@@ -151,7 +151,7 @@ void HephaestianSettingsWidget::drawCameraSection()
 	constexpr std::array<const char*, 2> c_ControlSchemeChoiceLabels{ "World coordinates", "Relative" };
 	const Systems::CameraControlScheme CurrentControlScheme = Systems::parseCameraControlSchemeName(CurrentControlSchemeName).value_or(Systems::CameraControlScheme::WorldCoordinates);
 	int SelectedControlSchemeIndex = static_cast<int>(std::ranges::find(c_ControlSchemeChoices, CurrentControlScheme) - c_ControlSchemeChoices.begin());
-	if (ImGui::Combo("Control scheme", &SelectedControlSchemeIndex, c_ControlSchemeChoiceLabels.data(), static_cast<int>(c_ControlSchemeChoiceLabels.size())))
+	if (ImGui::Combo(ControlSchemeLabel.c_str(), &SelectedControlSchemeIndex, c_ControlSchemeChoiceLabels.data(), static_cast<int>(c_ControlSchemeChoiceLabels.size())))
 	{
 		const std::string SelectedControlSchemeName{ Systems::getCameraControlSchemeName(c_ControlSchemeChoices[static_cast<std::size_t>(SelectedControlSchemeIndex)]) };
 		if (IsSceneOverriding)
